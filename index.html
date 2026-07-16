@@ -6,12 +6,10 @@
 <title>Ethos Crono — Pomodoro Avanzado</title>
 <meta name="description" content="Temporizador Pomodoro avanzado y ultra-personalizable para programadores, speedcubers y productividad general.">
 
-<!-- Fuentes -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Share+Tech+Mono&display=swap" rel="stylesheet">
 
-<!-- Lucide Icons -->
 <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
 
 <link rel="stylesheet" href="style.css">
@@ -34,9 +32,6 @@
       <button class="mode-btn is-active" data-mode="standard" role="tab" aria-selected="true">
         <i data-lucide="timer"></i><span>Estándar 25/5</span>
       </button>
-      <button class="mode-btn" data-mode="developer" role="tab" aria-selected="false">
-        <i data-lucide="code-2"></i><span>Programador 50/10</span>
-      </button>
       <button class="mode-btn" data-mode="speedcuber" role="tab" aria-selected="false">
         <i data-lucide="dice-5"></i><span>Speedcuber WCA</span>
       </button>
@@ -46,7 +41,7 @@
     </nav>
 
     <div class="topbar-actions">
-      <button id="themeToggleBtn" class="icon-btn" title="Cambiar tema (Cyberpunk / Liquid Glass)">
+      <button id="themeToggleBtn" class="icon-btn" title="Cambiar tema visual">
         <i data-lucide="palette"></i>
       </button>
       <button id="statsToggleBtn" class="icon-btn" title="Estadísticas del día">
@@ -61,89 +56,101 @@
   <!-- ===================== MAIN ===================== -->
   <main class="main-grid">
 
-    <!-- ---------- TIMER PANEL ---------- -->
-    <section class="timer-panel" aria-label="Temporizador">
-      <div class="timer-panel__glow" aria-hidden="true"></div>
+    <!-- ---------- TIMER STAGE (centrado robusto) ---------- -->
+    <div class="timer-stage">
 
-      <div class="session-label">
-        <span id="sessionBadge" class="session-badge">Enfoque</span>
-        <span id="sessionCount" class="session-count">Sesión 1 / 4</span>
-      </div>
+      <!-- ---------- TIMER PANEL ---------- -->
+      <section class="timer-panel" aria-label="Temporizador">
+        <div class="timer-panel__glow" aria-hidden="true"></div>
 
-      <!-- Speedcuber inspection ring -->
-      <div id="inspectionWrap" class="inspection-wrap hidden">
-        <p class="inspection-label"><i data-lucide="eye"></i> Inspección WCA — 15s</p>
-        <div id="inspectionTime" class="inspection-time">15</div>
-        <p class="inspection-hint">Pulsa <kbd>Espacio</kbd> para iniciar el cronómetro</p>
-      </div>
-
-      <div class="timer-ring-wrap">
-        <svg class="timer-ring" viewBox="0 0 300 300" aria-hidden="true">
-          <circle class="timer-ring__bg" cx="150" cy="150" r="135"></circle>
-          <circle id="timerRingProgress" class="timer-ring__progress" cx="150" cy="150" r="135"></circle>
-        </svg>
-
-        <div class="timer-display">
-          <div id="timeReadout" class="time-readout">25:00</div>
-          <div id="cubeReadout" class="cube-readout hidden">0.00</div>
-          <div id="microState" class="micro-state">Listo para empezar</div>
+        <div class="session-label">
+          <span id="sessionBadge" class="session-badge">Enfoque</span>
+          <span id="sessionCount" class="session-count">Sesión 1 / 4</span>
         </div>
-      </div>
 
-      <div class="timer-controls">
-        <button id="resetBtn" class="ctrl-btn ctrl-btn--ghost" title="Reiniciar (R)">
-          <i data-lucide="rotate-ccw"></i>
-        </button>
-        <button id="startPauseBtn" class="ctrl-btn ctrl-btn--primary" title="Iniciar / Pausar (Espacio)">
-          <i data-lucide="play"></i>
-          <span id="startPauseLabel">Iniciar</span>
-        </button>
-        <button id="skipBtn" class="ctrl-btn ctrl-btn--ghost" title="Saltar fase">
-          <i data-lucide="skip-forward"></i>
-        </button>
-      </div>
+        <!-- Speedcuber inspection ring -->
+        <div id="inspectionWrap" class="inspection-wrap hidden">
+          <p class="inspection-label"><i data-lucide="eye"></i> Inspección WCA — mantén pulsado <kbd>Espacio</kbd></p>
+          <div id="inspectionTime" class="inspection-time">15</div>
+          <p class="inspection-hint">Suelta <kbd>Espacio</kbd> para arrancar el cronómetro al instante</p>
+        </div>
 
-      <div class="keyboard-hints">
-        <span><kbd>Espacio</kbd> Iniciar/Pausar</span>
-        <span><kbd>R</kbd> Reiniciar</span>
-        <span><kbd>M</kbd> Silenciar</span>
-      </div>
-    </section>
+        <div class="timer-ring-wrap">
+          <svg class="timer-ring" viewBox="0 0 300 300" aria-hidden="true">
+            <circle class="timer-ring__bg" cx="150" cy="150" r="135"></circle>
+            <circle id="timerRingProgress" class="timer-ring__progress" cx="150" cy="150" r="135"></circle>
+          </svg>
 
-    <!-- ---------- SPEEDCUBER SCRAMBLE / TIMES ---------- -->
-    <section id="cubePanel" class="cube-panel hidden" aria-label="Panel Speedcuber">
-      <div class="panel-heading">
-        <i data-lucide="shuffle"></i>
-        <h2>Scramble</h2>
-        <button id="newScrambleBtn" class="icon-btn icon-btn--sm" title="Nuevo scramble">
-          <i data-lucide="refresh-cw"></i>
-        </button>
-      </div>
-      <p id="scrambleText" class="scramble-text">R U R' U' F2 D L2 B U2 R2 F' D' L U B2</p>
+          <div class="timer-display">
+            <div id="timeReadout" class="time-readout">25:00</div>
+            <div id="cubeReadout" class="cube-readout hidden">0.00</div>
+            <div id="microState" class="micro-state">Listo para empezar</div>
+          </div>
+        </div>
 
-      <div class="panel-heading">
-        <i data-lucide="list-ordered"></i>
-        <h2>Tiempos de hoy</h2>
-        <button id="clearTimesBtn" class="icon-btn icon-btn--sm" title="Borrar tiempos">
-          <i data-lucide="trash-2"></i>
-        </button>
-      </div>
-      <ol id="solveList" class="solve-list">
-        <li class="solve-list__empty">Aún no hay resoluciones registradas.</li>
-      </ol>
-      <div class="solve-stats">
-        <div><span>Mejor</span><strong id="bestSolve">—</strong></div>
-        <div><span>Ao5</span><strong id="ao5Solve">—</strong></div>
-        <div><span>Ao12</span><strong id="ao12Solve">—</strong></div>
-      </div>
-    </section>
+        <div class="timer-controls">
+          <button id="resetBtn" class="ctrl-btn ctrl-btn--ghost" title="Reiniciar (R)">
+            <i data-lucide="rotate-ccw"></i>
+          </button>
+          <button id="startPauseBtn" class="ctrl-btn ctrl-btn--primary" title="Iniciar / Pausar (Espacio)">
+            <i data-lucide="play"></i>
+            <span id="startPauseLabel">Iniciar</span>
+          </button>
+          <button id="skipBtn" class="ctrl-btn ctrl-btn--ghost" title="Saltar fase">
+            <i data-lucide="skip-forward"></i>
+          </button>
+        </div>
+
+        <div class="keyboard-hints">
+          <span><kbd>Espacio</kbd> Iniciar/Pausar · mantener = inspección</span>
+          <span><kbd>R</kbd> Reiniciar</span>
+          <span><kbd>M</kbd> Silenciar</span>
+        </div>
+      </section>
+
+      <!-- ---------- SPEEDCUBER SCRAMBLE / TIMES ---------- -->
+      <section id="cubePanel" class="cube-panel hidden" aria-label="Panel Speedcuber">
+        <div class="panel-heading">
+          <i data-lucide="shuffle"></i>
+          <h2>Scramble</h2>
+          <button id="newScrambleBtn" class="icon-btn icon-btn--sm" title="Nuevo scramble">
+            <i data-lucide="refresh-cw"></i>
+          </button>
+        </div>
+        <p id="scrambleText" class="scramble-text">R U R' U' F2 D L2 B U2 R2 F' D' L U B2</p>
+
+        <div class="panel-heading">
+          <i data-lucide="list-ordered"></i>
+          <h2>Tiempos de hoy</h2>
+          <button id="clearTimesBtn" class="icon-btn icon-btn--sm" title="Borrar tiempos">
+            <i data-lucide="trash-2"></i>
+          </button>
+        </div>
+        <ol id="solveList" class="solve-list">
+          <li class="solve-list__empty">Aún no hay resoluciones registradas.</li>
+        </ol>
+        <div class="solve-stats">
+          <div><span>Mejor</span><strong id="bestSolve">—</strong></div>
+          <div><span>Ao5</span><strong id="ao5Solve">—</strong></div>
+          <div><span>Ao12</span><strong id="ao12Solve">—</strong></div>
+        </div>
+
+        <!-- Mini cubo Rubik 2D (net) esquina inferior derecha -->
+        <div class="mini-cube-wrap" title="Vista previa de mezcla (colores decorativos)">
+          <svg id="miniCubeNet" viewBox="0 0 132 100" class="mini-cube-net"></svg>
+        </div>
+      </section>
+
+    </div>
 
     <!-- ---------- STATS PANEL ---------- -->
     <aside id="statsPanel" class="stats-panel hidden" aria-label="Estadísticas del día">
-      <div class="panel-heading">
+      <div class="panel-heading panel-heading--sticky">
         <i data-lucide="bar-chart-3"></i>
         <h2>Estadísticas de hoy</h2>
-        <button class="icon-btn icon-btn--sm" data-close="statsPanel"><i data-lucide="x"></i></button>
+        <button class="panel-close-btn" data-close="statsPanel" title="Cerrar panel">
+          <i data-lucide="x"></i><span>Cerrar</span>
+        </button>
       </div>
 
       <div class="stat-cards">
@@ -181,10 +188,12 @@
 
     <!-- ---------- SIDEBAR SETTINGS ---------- -->
     <aside id="sidebar" class="sidebar hidden" aria-label="Ajustes">
-      <div class="panel-heading">
+      <div class="panel-heading panel-heading--sticky">
         <i data-lucide="settings-2"></i>
         <h2>Ajustes</h2>
-        <button class="icon-btn icon-btn--sm" data-close="sidebar"><i data-lucide="x"></i></button>
+        <button class="panel-close-btn" data-close="sidebar" title="Cerrar panel">
+          <i data-lucide="x"></i><span>Cerrar</span>
+        </button>
       </div>
 
       <div class="settings-group">
@@ -196,17 +205,36 @@
           <button class="theme-swatch theme-swatch--liquid" data-theme-choice="liquid">
             <span></span>Liquid Glass
           </button>
+          <button class="theme-swatch theme-swatch--matrix" data-theme-choice="matrix">
+            <span></span>Matrix
+          </button>
+          <button class="theme-swatch theme-swatch--nordic" data-theme-choice="nordic">
+            <span></span>Nordic Aurora
+          </button>
         </div>
       </div>
 
       <div class="settings-group">
-        <h3>Duraciones personalizadas (min)</h3>
+        <h3>Fondo personalizado</h3>
+        <label class="upload-row" for="bgUploadInput">
+          <i data-lucide="image-plus"></i>
+          <span>Subir imagen de fondo</span>
+        </label>
+        <input type="file" id="bgUploadInput" accept="image/*" class="hidden">
+        <button id="removeBgBtn" class="text-btn">
+          <i data-lucide="image-off"></i> Eliminar fondo personalizado
+        </button>
+        <p id="bgStatus" class="sidebar-footer">Sin fondo personalizado activo.</p>
+      </div>
+
+      <div class="settings-group">
+        <h3>Temporizador personalizado</h3>
         <div class="field-row">
-          <label for="customFocus">Enfoque</label>
+          <label for="customFocus">Minutos de trabajo</label>
           <input type="number" id="customFocus" min="1" max="180" value="25">
         </div>
         <div class="field-row">
-          <label for="customShort">Descanso corto</label>
+          <label for="customShort">Minutos de descanso</label>
           <input type="number" id="customShort" min="1" max="60" value="5">
         </div>
         <div class="field-row">
@@ -216,6 +244,15 @@
         <div class="field-row">
           <label for="customRounds">Rondas por ciclo</label>
           <input type="number" id="customRounds" min="1" max="12" value="4">
+        </div>
+        <div class="field-row">
+          <label for="customAmbient">Sonido de fondo para esta sesión</label>
+          <select id="customAmbient">
+            <option value="none">Ninguno</option>
+            <option value="white">White Noise</option>
+            <option value="brown">Brown Noise</option>
+            <option value="rain">Lluvia (síntesis)</option>
+          </select>
         </div>
         <button id="applyCustomBtn" class="text-btn text-btn--accent">
           <i data-lucide="check"></i> Aplicar y usar modo personalizado
@@ -261,7 +298,7 @@
             <option value="none">Ninguno</option>
             <option value="white">White Noise (síntesis)</option>
             <option value="brown">Brown Noise (síntesis)</option>
-            <option value="rain">Lluvia (streaming)</option>
+            <option value="rain">Lluvia (síntesis)</option>
           </select>
         </div>
         <div class="slider-row">
@@ -274,13 +311,12 @@
         </button>
       </div>
 
-      <p class="sidebar-footer">Ethos Crono guarda tus estadísticas y preferencias localmente en tu navegador. Nada se envía a ningún servidor.</p>
+      <p class="sidebar-footer">Ethos Crono guarda tus estadísticas, ajustes y fondo personalizado localmente en tu navegador. Nada se envía a ningún servidor.</p>
     </aside>
 
   </main>
 </div>
 
-<!-- Overlay para cerrar paneles laterales en móvil -->
 <div id="overlay" class="overlay hidden"></div>
 
 <script src="app.js"></script>

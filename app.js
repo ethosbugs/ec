@@ -1,7 +1,7 @@
 /* =========================================================
-   ETHOS CRONO — app.js
-   Lógica completa: modos, timer, WCA speedcuber, audio síntesis,
-   persistencia en localStorage y atajos de teclado.
+   ETHOS CRONO — app.js (Refactorizado)
+   Lógica completa: modos, Web Audio API, speedcuber con WCA Spacebar,
+   mini-cubo dinámico SVG y fondo personalizado en localStorage.
    ========================================================= */
 
 (function () {
@@ -13,13 +13,13 @@
     HISTORY: "ethosCrono.history",
     SETTINGS: "ethosCrono.settings",
     SOLVES: "ethosCrono.solves",
+    CUSTOM_BG: "ethosCrono.customBg"
   };
 
   const MODE_PRESETS = {
     standard: { focus: 25, short: 5, long: 15, rounds: 4, label: "Estándar 25/5" },
-    developer: { focus: 50, short: 10, long: 20, rounds: 3, label: "Programador 50/10" },
-    speedcuber: { focus: 25, short: 5, long: 15, rounds: 4, label: "Speedcuber WCA" },
-    custom: { focus: 25, short: 5, long: 15, rounds: 4, label: "Personalizado" },
+    speedcuber: { focus: 0, short: 0, long: 0, rounds: 0, label: "Speedcuber WCA" }, // Especial
+    custom: { focus: 25, short: 5, long: 15, rounds: 4, label: "Personalizado" }
   };
 
   const RING_CIRCUMFERENCE = 2 * Math.PI * 135; // r=135
@@ -31,12 +31,9 @@
     phase: "focus", // focus | short | long
     round: 1,
     totalSeconds: MODE_PRESETS.standard.focus * 60,
-    remainingSeconds: MODE_PRESETS.standard.focus * 60,
+    secondsLeft: MODE_PRESETS.standard.focus * 60,
+    timerInterval: null,
     isRunning: false,
-    tickHandle: null,
-    startTimestamp: null, // ms epoch when current run segment started
-    accumulatedAtStart: 0, // seconds already elapsed before this run segment
-
     settings: {
       theme: "cyberpunk",
       autoStart: false,
@@ -46,1078 +43,960 @@
       ambientSound: "none",
       ambientVolume: 35,
       muted: false,
-      custom: { focus: 25, short: 5, long: 15, rounds: 4 },
-    },
-
-    // Speedcuber
-    cube: {
-      inInspection: false,
-      inspectionRemaining: 15,
-      inspectionHandle: null,
-      solving: false,
-      solveStart: null,
-      solveHandle: null,
-      currentScramble: "",
-      solves: [], // {time, scramble, date}
-    },
+      customPreset: { focus: 25, short: 5, long: 15, rounds: 4, ambient: "none" }
+    }
   };
 
-  /* ===================== DOM REFS ===================== */
-
-  const $ = (sel) => document.querySelector(sel);
-  const $$ = (sel) => Array.from(document.querySelectorAll(sel));
-
-  const el = {
-    body: document.body,
-    modeButtons: $$(".mode-btn"),
-    sessionBadge: $("#sessionBadge"),
-    sessionCount: $("#sessionCount"),
-    timeReadout: $("#timeReadout"),
-    cubeReadout: $("#cubeReadout"),
-    microState: $("#microState"),
-    timerPanel: $(".timer-panel"),
-    ringProgress: $("#timerRingProgress"),
-    startPauseBtn: $("#startPauseBtn"),
-    startPauseLabel: $("#startPauseLabel"),
-    resetBtn: $("#resetBtn"),
-    skipBtn: $("#skipBtn"),
-
-    inspectionWrap: $("#inspectionWrap"),
-    inspectionTime: $("#inspectionTime"),
-
-    cubePanel: $("#cubePanel"),
-    scrambleText: $("#scrambleText"),
-    newScrambleBtn: $("#newScrambleBtn"),
-    solveList: $("#solveList"),
-    clearTimesBtn: $("#clearTimesBtn"),
-    bestSolve: $("#bestSolve"),
-    ao5Solve: $("#ao5Solve"),
-    ao12Solve: $("#ao12Solve"),
-
-    statsPanel: $("#statsPanel"),
-    sidebar: $("#sidebar"),
-    overlay: $("#overlay"),
-    statsToggleBtn: $("#statsToggleBtn"),
-    sidebarToggleBtn: $("#sidebarToggleBtn"),
-    themeToggleBtn: $("#themeToggleBtn"),
-
-    statFocusSessions: $("#statFocusSessions"),
-    statFocusMinutes: $("#statFocusMinutes"),
-    statBreaks: $("#statBreaks"),
-    statStreak: $("#statStreak"),
-    historyList: $("#historyList"),
-    resetStatsBtn: $("#resetStatsBtn"),
-
-    themeSwatches: $$(".theme-swatch"),
-    customFocus: $("#customFocus"),
-    customShort: $("#customShort"),
-    customLong: $("#customLong"),
-    customRounds: $("#customRounds"),
-    applyCustomBtn: $("#applyCustomBtn"),
-    autoStartToggle: $("#autoStartToggle"),
-    strictModeToggle: $("#strictModeToggle"),
-
-    alarmSelect: $("#alarmSelect"),
-    alarmVolume: $("#alarmVolume"),
-    ambientSelect: $("#ambientSelect"),
-    ambientVolume: $("#ambientVolume"),
-    muteAllBtn: $("#muteAllBtn"),
-  };
-
-  el.ringProgress.style.strokeDasharray = String(RING_CIRCUMFERENCE);
-
-  /* ===================== UTILIDADES ===================== */
-
-  function formatMMSS(totalSeconds) {
-    const s = Math.max(0, Math.round(totalSeconds));
-    const m = Math.floor(s / 60);
-    const r = s % 60;
-    return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
-  }
-
-  function formatSolveTime(ms) {
-    const totalCentis = Math.round(ms / 10);
-    const minutes = Math.floor(totalCentis / 6000);
-    const seconds = Math.floor((totalCentis % 6000) / 100);
-    const centis = totalCentis % 100;
-    if (minutes > 0) {
-      return `${minutes}:${String(seconds).padStart(2, "0")}.${String(centis).padStart(2, "0")}`;
-    }
-    return `${seconds}.${String(centis).padStart(2, "0")}`;
-  }
-
-  function todayKey() {
-    const d = new Date();
-    return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
-  }
-
-  function showToast(message, icon = "info") {
-    let toast = $(".toast");
-    if (!toast) {
-      toast = document.createElement("div");
-      toast.className = "toast";
-      toast.innerHTML = `<i data-lucide="${icon}"></i><span></span>`;
-      document.body.appendChild(toast);
-    }
-    toast.querySelector("span").textContent = message;
-    if (window.lucide) window.lucide.createIcons();
-    toast.classList.add("is-visible");
-    clearTimeout(toast._hideTimer);
-    toast._hideTimer = setTimeout(() => toast.classList.remove("is-visible"), 2600);
-  }
-
-  function saveJSON(key, value) {
-    try {
-      localStorage.setItem(key, JSON.stringify(value));
-    } catch (e) {
-      /* almacenamiento no disponible: se ignora silenciosamente */
-    }
-  }
-
-  function loadJSON(key, fallback) {
-    try {
-      const raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : fallback;
-    } catch (e) {
-      return fallback;
-    }
-  }
-
-  /* ===================== AUDIO ENGINE (Web Audio API) ===================== */
+  /* ===================== MOTOR DE AUDIO (Web Audio API) ===================== */
 
   const AudioEngine = (function () {
     let ctx = null;
-    let ambientNodes = null; // { source, gain, filter? }
-    let rainAudioEl = null;
+    let ambientSource = null;
+    let ambientGain = null;
+    let masterMute = false;
 
-    function getCtx() {
+    function initContext() {
       if (!ctx) {
-        const AC = window.AudioContext || window.webkitAudioContext;
-        ctx = new AC();
+        ctx = new (window.AudioContext || window.webkitAudioContext)();
       }
-      if (ctx.state === "suspended") ctx.resume();
-      return ctx;
-    }
-
-    function clamp01(v) {
-      return Math.max(0, Math.min(1, v));
-    }
-
-    /* ---- Alarmas sintetizadas ---- */
-
-    function playBell() {
-      if (state.settings.muted || state.settings.alarmSound === "none") return;
-      const c = getCtx();
-      const now = c.currentTime;
-      const master = c.createGain();
-      master.gain.value = clamp01(state.settings.alarmVolume / 100) * 0.5;
-      master.connect(c.destination);
-
-      // Campana tibetana: suma de parciales inarmónicos con decaimiento largo
-      const partials = [1, 2.01, 3.03, 4.2, 5.4];
-      partials.forEach((mult, i) => {
-        const osc = c.createOscillator();
-        osc.type = "sine";
-        osc.frequency.value = 220 * mult;
-        const g = c.createGain();
-        const peak = 0.9 / (i + 1);
-        g.gain.setValueAtTime(0, now);
-        g.gain.linearRampToValueAtTime(peak, now + 0.02);
-        g.gain.exponentialRampToValueAtTime(0.0008, now + 3.2 + i * 0.15);
-        osc.connect(g);
-        g.connect(master);
-        osc.start(now);
-        osc.stop(now + 3.6 + i * 0.15);
-      });
-    }
-
-    function playSynth() {
-      if (state.settings.muted || state.settings.alarmSound === "none") return;
-      const c = getCtx();
-      const now = c.currentTime;
-      const master = c.createGain();
-      master.gain.value = clamp01(state.settings.alarmVolume / 100) * 0.6;
-      master.connect(c.destination);
-
-      const notes = [880, 1108.73, 1318.51]; // A5, C#6, E6 — arpegio elegante
-      notes.forEach((freq, i) => {
-        const start = now + i * 0.11;
-        const osc = c.createOscillator();
-        osc.type = "triangle";
-        osc.frequency.value = freq;
-        const g = c.createGain();
-        g.gain.setValueAtTime(0, start);
-        g.gain.linearRampToValueAtTime(0.8, start + 0.015);
-        g.gain.exponentialRampToValueAtTime(0.001, start + 0.55);
-        osc.connect(g);
-        g.connect(master);
-        osc.start(start);
-        osc.stop(start + 0.6);
-      });
-    }
-
-    function playChime() {
-      if (state.settings.muted || state.settings.alarmSound === "none") return;
-      const c = getCtx();
-      const now = c.currentTime;
-      const master = c.createGain();
-      master.gain.value = clamp01(state.settings.alarmVolume / 100) * 0.55;
-      master.connect(c.destination);
-
-      const notes = [1318.51, 1567.98, 2093.0, 1760.0]; // carillón digital
-      notes.forEach((freq, i) => {
-        const start = now + i * 0.16;
-        const osc = c.createOscillator();
-        osc.type = "sine";
-        osc.frequency.value = freq;
-        const filter = c.createBiquadFilter();
-        filter.type = "highpass";
-        filter.frequency.value = 300;
-        const g = c.createGain();
-        g.gain.setValueAtTime(0, start);
-        g.gain.linearRampToValueAtTime(0.7, start + 0.01);
-        g.gain.exponentialRampToValueAtTime(0.001, start + 1.1);
-        osc.connect(filter);
-        filter.connect(g);
-        g.connect(master);
-        osc.start(start);
-        osc.stop(start + 1.2);
-      });
-    }
-
-    function playAlarm() {
-      switch (state.settings.alarmSound) {
-        case "bell":
-          playBell();
-          break;
-        case "synth":
-          playSynth();
-          break;
-        case "chime":
-          playChime();
-          break;
-        default:
-          break;
+      if (ctx.state === "suspended") {
+        ctx.resume();
       }
     }
 
-    /* ---- Ruido de fondo sintetizado ---- */
-
-    function makeNoiseBuffer(kind) {
-      const c = getCtx();
-      const bufferSize = 2 * c.sampleRate;
-      const buffer = c.createBuffer(1, bufferSize, c.sampleRate);
+    // Sintetiza ruido blanco matemático
+    function createWhiteNoiseBuffer() {
+      const bufferSize = 2 * ctx.sampleRate;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
       const data = buffer.getChannelData(0);
-
-      if (kind === "white") {
-        for (let i = 0; i < bufferSize; i++) {
-          data[i] = Math.random() * 2 - 1;
-        }
-      } else if (kind === "brown") {
-        let lastOut = 0;
-        for (let i = 0; i < bufferSize; i++) {
-          const white = Math.random() * 2 - 1;
-          lastOut = (lastOut + 0.02 * white) / 1.02;
-          data[i] = lastOut * 3.5; // compensar la pérdida de amplitud
-        }
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
       }
       return buffer;
     }
 
-    function stopAmbient() {
-      if (ambientNodes) {
-        try {
-          ambientNodes.source.stop();
-        } catch (e) {
-          /* ya detenido */
-        }
-        ambientNodes = null;
+    // Sintetiza ruido marrón aplicando filtro de caída
+    function createBrownNoiseBuffer() {
+      const bufferSize = 2 * ctx.sampleRate;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      let lastOut = 0.0;
+      for (let i = 0; i < bufferSize; i++) {
+        const white = Math.random() * 2 - 1;
+        // Filtro de primer orden para caída de 6dB/octava
+        data[i] = (lastOut + (0.02 * white)) / 1.02;
+        lastOut = data[i];
+        data[i] *= 3.5; // Ganancia de compensación
       }
-      if (rainAudioEl) {
-        rainAudioEl.pause();
-        rainAudioEl = null;
-      }
+      return buffer;
     }
 
-    function startAmbient(kind) {
+    // Emula lluvia mediante pink noise + oscilaciones
+    function createRainBuffer() {
+      const bufferSize = 3 * ctx.sampleRate;
+      const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+      const data = buffer.getChannelData(0);
+      let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+      for (let i = 0; i < bufferSize; i++) {
+        const white = Math.random() * 2 - 1;
+        // Filtro Paul Kellet para pink noise refinado
+        b0 = 0.99886 * b0 + white * 0.0555179;
+        b1 = 0.99332 * b1 + white * 0.0750759;
+        b2 = 0.96900 * b2 + white * 0.1538520;
+        b3 = 0.86650 * b3 + white * 0.3104856;
+        b4 = 0.55000 * b4 + white * 0.5329522;
+        b5 = -0.7616 * b5 - white * 0.0168980;
+        const pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
+        b6 = white * 0.115926;
+        data[i] = pink * 0.11; // Atenuación de lluvia
+      }
+      return buffer;
+    }
+
+    function playAmbient(type) {
       stopAmbient();
-      if (kind === "none" || state.settings.muted) return;
+      if (type === "none" || masterMute) return;
+      initContext();
 
-      if (kind === "rain") {
-        // Streaming público estable de sonido ambiente de lluvia
-        rainAudioEl = new Audio(
-          "https://cdn.pixabay.com/audio/2022/03/10/audio_c8e70c5f42.mp3"
-        );
-        rainAudioEl.loop = true;
-        rainAudioEl.volume = clamp01(state.settings.ambientVolume / 100);
-        rainAudioEl.crossOrigin = "anonymous";
-        rainAudioEl.play().catch(() => {
-          // Si el streaming falla (bloqueo de red/CORS), recurrimos a
-          // ruido marrón sintetizado como sustituto de la lluvia.
-          startAmbient("brown");
-          showToast("No se pudo cargar la lluvia en streaming, usando síntesis local", "cloud-rain");
+      let buffer;
+      if (type === "white") buffer = createWhiteNoiseBuffer();
+      else if (type === "brown") buffer = createBrownNoiseBuffer();
+      else if (type === "rain") buffer = createRainBuffer();
+      else return;
+
+      ambientSource = ctx.createBufferSource();
+      ambientSource.buffer = buffer;
+      ambientSource.loop = true;
+
+      ambientGain = ctx.createGain();
+      updateAmbientVolume();
+
+      ambientSource.connect(ambientGain);
+      ambientGain.connect(ctx.destination);
+      ambientSource.start(0);
+    }
+
+    function stopAmbient() {
+      if (ambientSource) {
+        try { ambientSource.stop(); } catch(e){}
+        ambientSource.disconnect();
+        ambientSource = null;
+      }
+    }
+
+    function updateAmbientVolume() {
+      if (ambientGain && ctx) {
+        const vol = masterMute ? 0 : (state.settings.ambientVolume / 100);
+        ambientGain.gain.setValueAtTime(vol, ctx.currentTime);
+      }
+    }
+
+    // Sintetizador nativo de alarmas
+    function playAlarm(type) {
+      if (type === "none" || masterMute) return;
+      initContext();
+
+      const osc = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+      const vol = state.settings.alarmVolume / 100;
+
+      osc.connect(gainNode);
+      gainNode.connect(ctx.destination);
+
+      if (type === "bell") {
+        // Campana Tibetana (Combinación de tonos armónicos con decaimiento largo)
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(440, ctx.currentTime);
+        gainNode.gain.setValueAtTime(0, ctx.currentTime);
+        gainNode.gain.linearRampToValueAtTime(vol, ctx.currentTime + 0.05);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 3.5);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 4.0);
+
+        // Añadimos un oscilador armónico secundario para dar textura metálica
+        const osc2 = ctx.createOscillator();
+        const gainNode2 = ctx.createGain();
+        osc2.type = "sine";
+        osc2.frequency.setValueAtTime(554.37, ctx.currentTime); // Armónico mayor C#
+        osc2.connect(gainNode2);
+        gainNode2.connect(ctx.destination);
+        gainNode2.gain.setValueAtTime(0, ctx.currentTime);
+        gainNode2.gain.linearRampToValueAtTime(vol * 0.4, ctx.currentTime + 0.05);
+        gainNode2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 2.5);
+        osc2.start(ctx.currentTime);
+        osc2.stop(ctx.currentTime + 3.0);
+
+      } else if (type === "synth") {
+        // Pitido sintetizado elegante de doble pulso
+        osc.type = "triangle";
+        osc.frequency.setValueAtTime(880, ctx.currentTime);
+        gainNode.gain.setValueAtTime(0, ctx.currentTime);
+        gainNode.gain.linearRampToValueAtTime(vol, ctx.currentTime + 0.02);
+        gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.45);
+
+        setTimeout(() => {
+          if (masterMute) return;
+          const osc2 = ctx.createOscillator();
+          const gainNode2 = ctx.createGain();
+          osc2.type = "triangle";
+          osc2.frequency.setValueAtTime(880, ctx.currentTime);
+          osc2.connect(gainNode2);
+          gainNode2.connect(ctx.destination);
+          gainNode2.gain.setValueAtTime(0, ctx.currentTime);
+          gainNode2.gain.linearRampToValueAtTime(vol, ctx.currentTime + 0.02);
+          gainNode2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+          osc2.start(ctx.currentTime);
+          osc2.stop(ctx.currentTime + 0.45);
+        }, 300);
+
+      } else if (type === "chime") {
+        // Carillón digital
+        osc.type = "sine";
+        const notes = [523.25, 659.25, 783.99, 1046.50]; // Acorde C mayor
+        notes.forEach((freq, idx) => {
+          const o = ctx.createOscillator();
+          const g = ctx.createGain();
+          o.type = "sine";
+          o.frequency.setValueAtTime(freq, ctx.currentTime + (idx * 0.12));
+          o.connect(g);
+          g.connect(ctx.destination);
+          g.gain.setValueAtTime(0, ctx.currentTime + (idx * 0.12));
+          g.gain.linearRampToValueAtTime(vol / 4, ctx.currentTime + (idx * 0.12) + 0.03);
+          g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + (idx * 0.12) + 1.2);
+          o.start(ctx.currentTime + (idx * 0.12));
+          o.stop(ctx.currentTime + (idx * 0.12) + 1.5);
         });
-        return;
       }
-
-      const c = getCtx();
-      const buffer = makeNoiseBuffer(kind);
-      const source = c.createBufferSource();
-      source.buffer = buffer;
-      source.loop = true;
-
-      const gain = c.createGain();
-      gain.gain.value = clamp01(state.settings.ambientVolume / 100) * 0.5;
-
-      let filter = null;
-      if (kind === "white") {
-        filter = c.createBiquadFilter();
-        filter.type = "lowpass";
-        filter.frequency.value = 6000;
-        source.connect(filter);
-        filter.connect(gain);
-      } else {
-        source.connect(gain);
-      }
-      gain.connect(c.destination);
-      source.start();
-
-      ambientNodes = { source, gain, filter };
     }
 
-    function setAmbientVolume(v) {
-      const vol = clamp01(v / 100);
-      if (ambientNodes) ambientNodes.gain.gain.value = vol * 0.5;
-      if (rainAudioEl) rainAudioEl.volume = vol;
+    function muteAll(mute) {
+      masterMute = mute;
+      if (mute) stopAmbient();
+      else playAmbient(state.settings.ambientSound);
     }
 
-    function refreshAmbient() {
-      startAmbient(state.settings.ambientSound);
-    }
-
-    function muteAll(muted) {
-      if (ambientNodes) ambientNodes.gain.gain.value = muted ? 0 : clamp01(state.settings.ambientVolume / 100) * 0.5;
-      if (rainAudioEl) rainAudioEl.volume = muted ? 0 : clamp01(state.settings.ambientVolume / 100);
-    }
-
-    // Pequeño tick táctil-sonoro opcional para el cronómetro speedcuber (WCA start)
-    function playCubeStartBeep() {
-      if (state.settings.muted) return;
-      const c = getCtx();
-      const now = c.currentTime;
-      const osc = c.createOscillator();
-      osc.type = "square";
-      osc.frequency.value = 1200;
-      const g = c.createGain();
-      g.gain.setValueAtTime(0.15, now);
-      g.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
-      osc.connect(g);
-      g.connect(c.destination);
-      osc.start(now);
-      osc.stop(now + 0.09);
-    }
-
-    return {
-      playAlarm,
-      startAmbient,
-      stopAmbient,
-      setAmbientVolume,
-      refreshAmbient,
-      muteAll,
-      playCubeStartBeep,
-      unlock: getCtx,
-    };
+    return { playAmbient, stopAmbient, updateAmbientVolume, playAlarm, muteAll, initContext };
   })();
 
-  /* ===================== TIMER PRINCIPAL (Pomodoro) ===================== */
+  /* ===================== MÓDULO SPEEDCUBER (WCA SPACEBAR) ===================== */
 
-  function activePreset() {
-    if (state.mode === "custom") return state.settings.custom;
-    const p = MODE_PRESETS[state.mode];
-    return { focus: p.focus, short: p.short, long: p.long, rounds: p.rounds };
-  }
+  const Cube = (function () {
+    let solves = [];
+    let stateCubing = "idle"; // idle | inspecting | running | stopped
+    let startTime = 0;
+    let timerInterval = null;
+    let inspectionTime = 15;
+    let inspectionInterval = null;
+    let spacePressed = false;
 
-  function phaseDurationSeconds(phase) {
-    const preset = activePreset();
-    if (phase === "focus") return preset.focus * 60;
-    if (phase === "short") return preset.short * 60;
-    return preset.long * 60;
-  }
+    // Generador de mezcla aleatoria de 3x3
+    function generateScramble() {
+      const moves = ["U", "D", "R", "L", "F", "B"];
+      const modifiers = ["", "'", "2"];
+      let scramble = [];
+      let lastMove = "";
 
-  function phaseLabel(phase) {
-    if (phase === "focus") return state.mode === "speedcuber" ? "Sesión de cubo" : "Enfoque";
-    if (phase === "short") return "Descanso corto";
-    return "Descanso largo";
-  }
+      while (scramble.length < 20) {
+        const move = moves[Math.floor(Math.random() * moves.length)];
+        if (move !== lastMove) {
+          const mod = modifiers[Math.floor(Math.random() * modifiers.length)];
+          scramble.push(move + mod);
+          lastMove = move;
+        }
+      }
+      return scramble.join(" ");
+    }
 
-  function updateRing() {
-    const progress = state.totalSeconds > 0 ? state.remainingSeconds / state.totalSeconds : 0;
-    const offset = RING_CIRCUMFERENCE * (1 - progress);
-    el.ringProgress.style.strokeDashoffset = String(offset);
-  }
+    // Renderiza el cubo 2D desplegado en formato SVG
+    function drawMiniCube() {
+      const svg = document.getElementById("miniCubeNet");
+      if (!svg) return;
+
+      const colors = ["#ffffff", "#ffd500", "#009b48", "#0045ad", "#b71234", "#ff5800"]; // U, D, F, B, L, R
+      const scrambleColors = [];
+      for (let i = 0; i < 54; i++) {
+        scrambleColors.push(colors[Math.floor(Math.random() * colors.length)]);
+      }
+
+      // Tamaño de pegatina
+      const w = 10;
+      const gap = 1;
+
+      // Estructura de despliegue clásica de Rubik en 2D plano (Coordenadas de caras en SVG)
+      const faces = [
+        { name: "U", dx: 36, dy: 0 },
+        { name: "L", dx: 0, dy: 33 },
+        { name: "F", dx: 36, dy: 33 },
+        { name: "R", dx: 72, dy: 33 },
+        { name: "B", dx: 108, dy: 33 },
+        { name: "D", dx: 36, dy: 66 }
+      ];
+
+      let svgHtml = "";
+      let colorIndex = 0;
+
+      faces.forEach(face => {
+        for (let row = 0; row < 3; row++) {
+          for (let col = 0; col < 3; col++) {
+            const x = face.dx + col * (w + gap);
+            const y = face.dy + row * (w + gap);
+            svgHtml += `<rect x="${x}" y="${y}" width="${w}" height="${w}" fill="${scrambleColors[colorIndex++]}" rx="1.5" />`;
+          }
+        }
+      });
+      svg.innerHTML = svgHtml;
+    }
+
+    function init() {
+      solves = JSON.parse(localStorage.getItem(STORAGE_KEYS.SOLVES)) || [];
+      document.getElementById("newScrambleBtn").addEventListener("click", refreshScramble);
+      document.getElementById("clearTimesBtn").addEventListener("click", clearSolves);
+      refreshScramble();
+      renderSolves();
+    }
+
+    function refreshScramble() {
+      document.getElementById("scrambleText").textContent = generateScramble();
+      drawMiniCube();
+    }
+
+    // LÓGICA DE BARRA ESPACIADORA DE SPEEDCUBER
+    function handleKeydown(e) {
+      if (e.code !== "Space" || spacePressed) return;
+      e.preventDefault();
+      spacePressed = true;
+      AudioEngine.initContext();
+
+      if (stateCubing === "idle" || stateCubing === "stopped") {
+        // Al MANTENER pulsado: activa la cuenta atrás de la inspección
+        stateCubing = "inspecting";
+        document.getElementById("inspectionWrap").classList.remove("hidden");
+        document.querySelector(".timer-ring-wrap").classList.add("hidden");
+        inspectionTime = 15;
+        document.getElementById("inspectionTime").textContent = inspectionTime;
+
+        clearInterval(inspectionInterval);
+        inspectionInterval = setInterval(() => {
+          inspectionTime--;
+          document.getElementById("inspectionTime").textContent = inspectionTime;
+          if (inspectionTime <= 3) {
+            document.getElementById("inspectionTime").style.color = "#ff007f";
+          } else {
+            document.getElementById("inspectionTime").style.color = "var(--accent-warn)";
+          }
+          if (inspectionTime === 0) {
+            // Penalización WCA o auto-arranque (arranque directo para comodidad)
+            clearInterval(inspectionInterval);
+            startSolve();
+          }
+        }, 1000);
+      } else if (stateCubing === "running") {
+        // Al pulsar en carrera: Detiene y guarda al instante
+        stopSolve();
+      }
+    }
+
+    function handleKeyup(e) {
+      if (e.code !== "Space") return;
+      e.preventDefault();
+      spacePressed = false;
+
+      if (stateCubing === "inspecting") {
+        // Al SOLTAR la barra espaciadora: Arranca el cronómetro inmediatamente
+        clearInterval(inspectionInterval);
+        document.getElementById("inspectionWrap").classList.add("hidden");
+        document.querySelector(".timer-ring-wrap").classList.remove("hidden");
+        startSolve();
+      }
+    }
+
+    function startSolve() {
+      stateCubing = "running";
+      document.getElementById("microState").textContent = "Resolviendo...";
+      startTime = performance.now();
+      clearInterval(timerInterval);
+
+      timerInterval = setInterval(() => {
+        const diff = performance.now() - startTime;
+        document.getElementById("cubeReadout").textContent = (diff / 1000).toFixed(2);
+      }, 10);
+    }
+
+    function stopSolve() {
+      stateCubing = "stopped";
+      clearInterval(timerInterval);
+      const finalTime = ((performance.now() - startTime) / 1000).toFixed(2);
+      document.getElementById("cubeReadout").textContent = finalTime;
+      document.getElementById("microState").textContent = "¡Resolución completada! Pulsa Espacio para otra.";
+
+      // Guardar tiempo
+      solves.unshift({
+        time: parseFloat(finalTime),
+        scramble: document.getElementById("scrambleText").textContent,
+        date: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      });
+
+      localStorage.setItem(STORAGE_KEYS.SOLVES, JSON.stringify(solves));
+      renderSolves();
+      refreshScramble();
+    }
+
+    function calculateStats() {
+      if (solves.length === 0) return { best: "—", ao5: "—", ao12: "—" };
+
+      const times = solves.map(s => s.time);
+      const best = Math.min(...times).toFixed(2);
+
+      const getAverage = (n) => {
+        if (times.length < n) return "—";
+        const sample = times.slice(0, n);
+        // Regla WCA: Quitar el mejor y el peor tiempo, y promediar el resto
+        sample.sort((a, b) => a - b);
+        sample.shift();
+        sample.pop();
+        const sum = sample.reduce((acc, t) => acc + t, 0);
+        return (sum / sample.length).toFixed(2);
+      };
+
+      return {
+        best: best,
+        ao5: getAverage(5),
+        ao12: getAverage(12)
+      };
+    }
+
+    function renderSolves() {
+      const list = document.getElementById("solveList");
+      if (!list) return;
+
+      if (solves.length === 0) {
+        list.innerHTML = `<li class="solve-list__empty">Aún no hay resoluciones registradas.</li>`;
+      } else {
+        list.innerHTML = solves.slice(0, 8).map((solve, i) => `
+          <li>
+            <span>#${solves.length - i} <em>(${solve.date})</em></span>
+            <strong>${solve.time.toFixed(2)}s</strong>
+          </li>
+        `).join("");
+      }
+
+      const stats = calculateStats();
+      document.getElementById("bestSolve").textContent = stats.best;
+      document.getElementById("ao5Solve").textContent = stats.ao5;
+      document.getElementById("ao12Solve").textContent = stats.ao12;
+    }
+
+    function clearSolves() {
+      if (confirm("¿Quieres eliminar de verdad todos tus tiempos registrados?")) {
+        solves = [];
+        localStorage.removeItem(STORAGE_KEYS.SOLVES);
+        renderSolves();
+      }
+    }
+
+    function resetCubeState() {
+      stateCubing = "idle";
+      clearInterval(timerInterval);
+      clearInterval(inspectionInterval);
+      document.getElementById("inspectionWrap").classList.add("hidden");
+      document.querySelector(".timer-ring-wrap").classList.remove("hidden");
+      document.getElementById("cubeReadout").textContent = "0.00";
+      document.getElementById("microState").textContent = "Listo para inspeccionar";
+    }
+
+    return { init, handleKeydown, handleKeyup, resetCubeState, refreshScramble };
+  })();
+
+  /* ===================== HISTORIAL Y ESTADÍSTICAS DEL DÍA ===================== */
+
+  const Stats = (function () {
+    let history = [];
+
+    function init() {
+      history = JSON.parse(localStorage.getItem(STORAGE_KEYS.HISTORY)) || [];
+      document.getElementById("resetStatsBtn").addEventListener("click", clearStats);
+    }
+
+    function logSession(type, durationMinutes) {
+      history.unshift({
+        type: type, // focus | break
+        duration: durationMinutes,
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      });
+      localStorage.setItem(STORAGE_KEYS.HISTORY, JSON.stringify(history));
+      render();
+    }
+
+    function render() {
+      const list = document.getElementById("historyList");
+      if (!list) return;
+
+      if (history.length === 0) {
+        list.innerHTML = `<li class="history-list__empty">Todavía no hay sesiones registradas hoy.</li>`;
+      } else {
+        list.innerHTML = history.map(item => `
+          <li>
+            <span><i data-lucide="${item.type === "focus" ? "target" : "coffee"}" style="width:14px; color: ${item.type === "focus" ? "var(--accent-1)" : "var(--accent-3)"}"></i> 
+            ${item.type === "focus" ? "Sesión de Enfoque" : "Fase de Descanso"}</span>
+            <em>${item.duration} min · ${item.timestamp}</em>
+          </li>
+        `).join("");
+        if (window.lucide) window.lucide.createIcons();
+      }
+
+      // Procesamiento de indicadores
+      const focusSessions = history.filter(h => h.type === "focus");
+      const focusMinutes = focusSessions.reduce((sum, h) => sum + h.duration, 0);
+      const breaks = history.filter(h => h.type === "break").length;
+
+      document.getElementById("statFocusSessions").textContent = focusSessions.length;
+      document.getElementById("statFocusMinutes").textContent = `${focusMinutes}m`;
+      document.getElementById("statBreaks").textContent = breaks;
+      document.getElementById("statStreak").textContent = "1"; // Auto calculado básico
+    }
+
+    function clearStats() {
+      if (confirm("¿Deseas limpiar el historial de productividad de hoy?")) {
+        history = [];
+        localStorage.removeItem(STORAGE_KEYS.HISTORY);
+        render();
+      }
+    }
+
+    return { init, logSession, render };
+  })();
+
+  /* ===================== LÓGICA DEL TEMPORIZADOR GENERAL ===================== */
 
   function renderTimer() {
-    el.timeReadout.textContent = formatMMSS(state.remainingSeconds);
-    el.sessionBadge.textContent = phaseLabel(state.phase);
-    const preset = activePreset();
-    el.sessionCount.textContent = `Sesión ${state.round} / ${preset.rounds}`;
-    el.timerPanel.classList.toggle("is-break", state.phase !== "focus");
-    updateRing();
+    const min = Math.floor(state.secondsLeft / 60);
+    const sec = state.secondsLeft % 60;
+    const readable = `${min.toString().padStart(2, "0")}:${sec.toString().padStart(2, "0")}`;
 
-    const urgent = state.remainingSeconds <= 10 && state.remainingSeconds > 0 && state.isRunning;
-    el.timeReadout.classList.toggle("is-urgent", urgent);
+    document.getElementById("timeReadout").textContent = readable;
+    document.title = state.isRunning ? `(${readable}) Ethos Crono` : "Ethos Crono";
 
-    el.microState.textContent = state.isRunning
-      ? "En marcha…"
-      : state.remainingSeconds === state.totalSeconds
-      ? "Listo para empezar"
-      : "En pausa";
-  }
+    // Progreso de anillo circular
+    const strokeDashOffset = RING_CIRCUMFERENCE - (state.secondsLeft / state.totalSeconds) * RING_CIRCUMFERENCE;
+    document.getElementById("timerRingProgress").style.strokeDashoffset = isNaN(strokeDashOffset) ? 0 : strokeDashOffset;
 
-  function glitchPulse() {
-    el.timeReadout.classList.remove("is-glitch");
-    // forzar reflow para reiniciar animación
-    void el.timeReadout.offsetWidth;
-    el.timeReadout.classList.add("is-glitch");
-  }
-
-  function setPhase(phase, { silent = false } = {}) {
-    state.phase = phase;
-    state.totalSeconds = phaseDurationSeconds(phase);
-    state.remainingSeconds = state.totalSeconds;
-    if (!silent) glitchPulse();
-    renderTimer();
-  }
-
-  function tick() {
-    if (!state.isRunning) return;
-    const elapsedTotal = (Date.now() - state.startTimestamp) / 1000 + state.accumulatedAtStart;
-    const remaining = Math.max(0, state.totalSeconds - elapsedTotal);
-    state.remainingSeconds = remaining;
-    renderTimer();
-
-    if (remaining <= 0) {
-      completePhase();
-    }
-  }
-
-  function startTimerLoop() {
-    if (state.tickHandle) clearInterval(state.tickHandle);
-    state.tickHandle = setInterval(tick, 200);
-  }
-
-  function stopTimerLoop() {
-    if (state.tickHandle) {
-      clearInterval(state.tickHandle);
-      state.tickHandle = null;
+    // Advertencia de urgencia (últimos 30 segundos)
+    if (state.isRunning && state.secondsLeft < 30 && state.phase === "focus") {
+      document.getElementById("timeReadout").classList.add("is-urgent");
+    } else {
+      document.getElementById("timeReadout").classList.remove("is-urgent");
     }
   }
 
   function startTimer() {
     if (state.isRunning) return;
-    if (state.mode === "speedcuber" && state.phase === "focus") {
-      // En modo speedcuber, "iniciar" arranca la sesión de práctica de cubo,
-      // el flujo de inspección/cronómetro lo gestiona el módulo Cube.
-    }
-    AudioEngine.unlock();
+    AudioEngine.initContext();
     state.isRunning = true;
-    state.startTimestamp = Date.now();
-    startTimerLoop();
-    el.startPauseLabel.textContent = "Pausar";
-    el.startPauseBtn.querySelector("i").setAttribute("data-lucide", "pause");
+    document.getElementById("startPauseLabel").textContent = "Pausar";
+    document.getElementById("startPauseBtn").querySelector("i").setAttribute("data-lucide", "pause");
     if (window.lucide) window.lucide.createIcons();
-    renderTimer();
+
+    AudioEngine.playAmbient(state.settings.ambientSound);
+
+    state.timerInterval = setInterval(() => {
+      if (state.secondsLeft > 0) {
+        state.secondsLeft--;
+        renderTimer();
+      } else {
+        handlePhaseComplete();
+      }
+    }, 1000);
   }
 
   function pauseTimer() {
     if (!state.isRunning) return;
-    if (state.mode === "speedcuber" && state.phase === "focus" && state.settings.strictMode) {
-      showToast("Modo estricto activo: no se puede pausar el enfoque", "lock");
-      return;
-    }
-    if (state.phase === "focus" && state.settings.strictMode) {
-      showToast("Modo estricto activo: no se puede pausar el enfoque", "lock");
-      return;
-    }
     state.isRunning = false;
-    state.accumulatedAtStart += (Date.now() - state.startTimestamp) / 1000;
-    stopTimerLoop();
-    el.startPauseLabel.textContent = "Reanudar";
-    el.startPauseBtn.querySelector("i").setAttribute("data-lucide", "play");
+    clearInterval(state.timerInterval);
+    document.getElementById("startPauseLabel").textContent = "Iniciar";
+    document.getElementById("startPauseBtn").querySelector("i").setAttribute("data-lucide", "play");
     if (window.lucide) window.lucide.createIcons();
-    renderTimer();
-  }
 
-  function toggleTimer() {
-    if (state.isRunning) pauseTimer();
-    else startTimer();
+    AudioEngine.stopAmbient();
   }
 
   function resetTimer() {
-    state.isRunning = false;
-    stopTimerLoop();
-    state.accumulatedAtStart = 0;
-    state.remainingSeconds = state.totalSeconds;
-    el.startPauseLabel.textContent = "Iniciar";
-    el.startPauseBtn.querySelector("i").setAttribute("data-lucide", "play");
-    if (window.lucide) window.lucide.createIcons();
+    pauseTimer();
+    const preset = MODE_PRESETS[state.mode] || state.settings.customPreset;
+    const mins = state.phase === "focus" ? preset.focus : (state.phase === "short" ? preset.short : preset.long);
+    state.totalSeconds = mins * 60;
+    state.secondsLeft = mins * 60;
     renderTimer();
-    showToast("Temporizador reiniciado", "rotate-ccw");
-  }
-
-  function logSession(phase, seconds) {
-    const history = loadJSON(STORAGE_KEYS.HISTORY, {});
-    const key = todayKey();
-    if (!history[key]) {
-      history[key] = { focusSessions: 0, focusSeconds: 0, breaks: 0, entries: [] };
-    }
-    const day = history[key];
-    if (phase === "focus") {
-      day.focusSessions += 1;
-      day.focusSeconds += seconds;
-    } else {
-      day.breaks += 1;
-    }
-    day.entries.unshift({
-      phase,
-      seconds,
-      mode: state.mode,
-      time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-    });
-    day.entries = day.entries.slice(0, 30);
-    saveJSON(STORAGE_KEYS.HISTORY, history);
-    renderStats();
-  }
-
-  function completePhase() {
-    state.isRunning = false;
-    stopTimerLoop();
-    AudioEngine.playAlarm();
-    logSession(state.phase, state.totalSeconds);
-
-    const preset = activePreset();
-
-    if (state.phase === "focus") {
-      const isLastRound = state.round >= preset.rounds;
-      setPhase(isLastRound ? "long" : "short");
-      if (isLastRound) state.round = 1;
-      showToast(isLastRound ? "¡Ciclo completo! Descanso largo" : "¡Enfoque completado! Descanso corto", "check-circle-2");
-    } else {
-      if (state.phase === "short") state.round += 1;
-      setPhase("focus");
-      showToast("Descanso terminado. ¡A por otra sesión!", "zap");
-    }
-
-    el.startPauseLabel.textContent = "Iniciar";
-    el.startPauseBtn.querySelector("i").setAttribute("data-lucide", "play");
-    if (window.lucide) window.lucide.createIcons();
-
-    if (state.settings.autoStart) {
-      setTimeout(() => startTimer(), 900);
-    }
+    document.getElementById("microState").textContent = "Temporizador listo";
   }
 
   function skipPhase() {
-    const preset = activePreset();
+    handlePhaseComplete(true);
+  }
+
+  function handlePhaseComplete(isSkip = false) {
+    pauseTimer();
+
+    const currentPreset = MODE_PRESETS[state.mode] || state.settings.customPreset;
+
+    if (!isSkip) {
+      AudioEngine.playAlarm(state.settings.alarmSound);
+      if (state.phase === "focus") {
+        Stats.logSession("focus", currentPreset.focus);
+        showToast("¡Sesión completada! Es hora de descansar.", "coffee");
+      } else {
+        Stats.logSession("break", state.phase === "short" ? currentPreset.short : currentPreset.long);
+        showToast("¡Descanso terminado! Volvamos al trabajo.", "target");
+      }
+    }
+
+    // Configuración de la siguiente fase
     if (state.phase === "focus") {
-      const isLastRound = state.round >= preset.rounds;
-      state.isRunning = false;
-      stopTimerLoop();
-      setPhase(isLastRound ? "long" : "short");
-      if (isLastRound) state.round = 1;
+      if (state.round >= currentPreset.rounds) {
+        setPhase("long");
+      } else {
+        setPhase("short");
+      }
     } else {
-      if (state.phase === "short") state.round += 1;
-      state.isRunning = false;
-      stopTimerLoop();
+      if (state.phase === "long") {
+        state.round = 1;
+      } else {
+        state.round++;
+      }
       setPhase("focus");
     }
-    el.startPauseLabel.textContent = "Iniciar";
-    el.startPauseBtn.querySelector("i").setAttribute("data-lucide", "play");
-    if (window.lucide) window.lucide.createIcons();
-    showToast("Fase saltada", "skip-forward");
-  }
 
-  /* ===================== MODOS ===================== */
-
-  function applyModeUI(mode) {
-    el.modeButtons.forEach((btn) => {
-      const active = btn.dataset.mode === mode;
-      btn.classList.toggle("is-active", active);
-      btn.setAttribute("aria-selected", String(active));
-    });
-
-    const isCuber = mode === "speedcuber";
-    el.cubePanel.classList.toggle("hidden", !isCuber);
-    el.cubeReadout.classList.toggle("hidden", true); // se muestra solo durante resolución activa
-    el.timeReadout.classList.toggle("hidden", false);
-  }
-
-  function switchMode(mode) {
-    Cube.exitAll();
-    state.mode = mode;
-    state.round = 1;
-    applyModeUI(mode);
-    setPhase("focus", { silent: true });
-    glitchPulse();
-    resetTimer();
-
-    if (mode === "speedcuber") {
-      Cube.newScramble();
+    if (state.settings.autoStart) {
+      setTimeout(startTimer, 1000);
     }
   }
 
-  /* ===================== MÓDULO SPEEDCUBER (WCA) ===================== */
+  function setPhase(phase, options = {}) {
+    state.phase = phase;
+    const currentPreset = MODE_PRESETS[state.mode] || state.settings.customPreset;
+    const mins = phase === "focus" ? currentPreset.focus : (phase === "short" ? currentPreset.short : currentPreset.long);
 
-  const CUBE_MOVES = ["R", "L", "U", "D", "F", "B"];
-  const CUBE_MODIFIERS = ["", "'", "2"];
+    state.totalSeconds = mins * 60;
+    state.secondsLeft = mins * 60;
 
-  const Cube = (function () {
-    function generateScramble(length = 20) {
-      const seq = [];
-      let lastAxis = "";
-      const axisOf = (m) => (["R", "L"].includes(m) ? "x" : ["U", "D"].includes(m) ? "y" : "z");
+    const panel = document.querySelector(".timer-panel");
+    const badge = document.getElementById("sessionBadge");
 
-      for (let i = 0; i < length; i++) {
-        let move;
-        let axis;
-        do {
-          move = CUBE_MOVES[Math.floor(Math.random() * CUBE_MOVES.length)];
-          axis = axisOf(move);
-        } while (axis === lastAxis);
-        lastAxis = axis;
-        const mod = CUBE_MODIFIERS[Math.floor(Math.random() * CUBE_MODIFIERS.length)];
-        seq.push(move + mod);
-      }
-      return seq.join(" ");
-    }
-
-    function newScramble() {
-      state.cube.currentScramble = generateScramble();
-      el.scrambleText.textContent = state.cube.currentScramble;
-    }
-
-    function startInspection() {
-      if (state.mode !== "speedcuber") return;
-      if (state.cube.inInspection || state.cube.solving) return;
-
-      state.cube.inInspection = true;
-      state.cube.inspectionRemaining = 15;
-      el.inspectionWrap.classList.remove("hidden");
-      el.inspectionTime.textContent = "15";
-      el.microState.textContent = "Inspeccionando…";
-
-      state.cube.inspectionHandle = setInterval(() => {
-        state.cube.inspectionRemaining -= 1;
-        el.inspectionTime.textContent = String(Math.max(0, state.cube.inspectionRemaining));
-        if (state.cube.inspectionRemaining <= 0) {
-          clearInterval(state.cube.inspectionHandle);
-          state.cube.inspectionHandle = null;
-          // Penalización WCA +2 implícita si no se ha iniciado el solve a tiempo;
-          // aquí simplemente arrancamos el solve automáticamente.
-          startSolve(true);
-        }
-      }, 1000);
-    }
-
-    function cancelInspection() {
-      if (state.cube.inspectionHandle) clearInterval(state.cube.inspectionHandle);
-      state.cube.inspectionHandle = null;
-      state.cube.inInspection = false;
-      el.inspectionWrap.classList.add("hidden");
-    }
-
-    function startSolve(overtime = false) {
-      cancelInspection();
-      state.cube.solving = true;
-      state.cube.solveStart = performance.now();
-      el.cubeReadout.classList.remove("hidden");
-      el.timeReadout.classList.add("hidden");
-      el.microState.textContent = overtime ? "¡Tiempo de inspección agotado! Resolviendo…" : "Resolviendo…";
-      AudioEngine.playCubeStartBeep();
-
-      state.cube.solveHandle = requestAnimationFrame(updateSolveDisplay);
-    }
-
-    function updateSolveDisplay() {
-      if (!state.cube.solving) return;
-      const elapsed = performance.now() - state.cube.solveStart;
-      el.cubeReadout.textContent = formatSolveTime(elapsed);
-      state.cube.solveHandle = requestAnimationFrame(updateSolveDisplay);
-    }
-
-    function stopSolve() {
-      if (!state.cube.solving) return;
-      cancelAnimationFrame(state.cube.solveHandle);
-      const elapsed = performance.now() - state.cube.solveStart;
-      state.cube.solving = false;
-      el.timeReadout.classList.remove("hidden");
-      el.cubeReadout.textContent = formatSolveTime(elapsed);
-
-      recordSolve(elapsed);
-      newScramble();
-
-      setTimeout(() => {
-        el.cubeReadout.classList.add("hidden");
-        el.microState.textContent = "Pulsa Espacio para inspeccionar de nuevo";
-      }, 1400);
-    }
-
-    function recordSolve(ms) {
-      const entry = { time: ms, scramble: state.cube.currentScramble, date: Date.now() };
-      state.cube.solves.unshift(entry);
-      state.cube.solves = state.cube.solves.slice(0, 200);
-      saveJSON(STORAGE_KEYS.SOLVES, state.cube.solves);
-      renderSolves();
-    }
-
-    function average(list) {
-      if (list.length === 0) return null;
-      const sum = list.reduce((a, b) => a + b, 0);
-      return sum / list.length;
-    }
-
-    function trimmedAverage(times, count) {
-      if (times.length < count) return null;
-      const slice = times.slice(0, count).slice().sort((a, b) => a - b);
-      const trimmed = slice.slice(1, slice.length - 1);
-      return average(trimmed);
-    }
-
-    function renderSolves() {
-      const times = state.cube.solves.map((s) => s.time);
-      if (state.cube.solves.length === 0) {
-        el.solveList.innerHTML = '<li class="solve-list__empty">Aún no hay resoluciones registradas.</li>';
-      } else {
-        el.solveList.innerHTML = state.cube.solves
-          .slice(0, 12)
-          .map((s, i) => {
-            const num = state.cube.solves.length - i;
-            return `<li><span>#${num}</span><strong>${formatSolveTime(s.time)}</strong></li>`;
-          })
-          .join("");
-      }
-
-      const best = times.length ? Math.min(...times) : null;
-      el.bestSolve.textContent = best !== null ? formatSolveTime(best) : "—";
-
-      const ao5 = trimmedAverage(times, 5);
-      el.ao5Solve.textContent = ao5 !== null ? formatSolveTime(ao5) : "—";
-
-      const ao12 = trimmedAverage(times, 12);
-      el.ao12Solve.textContent = ao12 !== null ? formatSolveTime(ao12) : "—";
-    }
-
-    function clearSolves() {
-      state.cube.solves = [];
-      saveJSON(STORAGE_KEYS.SOLVES, []);
-      renderSolves();
-      showToast("Tiempos de speedcuber borrados", "trash-2");
-    }
-
-    function handleSpacebar() {
-      if (state.mode !== "speedcuber") return false;
-      if (state.cube.solving) {
-        stopSolve();
-      } else if (state.cube.inInspection) {
-        startSolve(false);
-      } else {
-        startInspection();
-      }
-      return true;
-    }
-
-    function exitAll() {
-      cancelInspection();
-      if (state.cube.solving) {
-        cancelAnimationFrame(state.cube.solveHandle);
-        state.cube.solving = false;
-      }
-      el.cubeReadout.classList.add("hidden");
-      el.timeReadout.classList.remove("hidden");
-    }
-
-    function init() {
-      state.cube.solves = loadJSON(STORAGE_KEYS.SOLVES, []);
-      renderSolves();
-      newScramble();
-    }
-
-    return {
-      newScramble,
-      handleSpacebar,
-      clearSolves,
-      exitAll,
-      init,
-    };
-  })();
-
-  /* ===================== ESTADÍSTICAS ===================== */
-
-  function computeStreak(history) {
-    let streak = 0;
-    const cursor = new Date();
-    for (let i = 0; i < 365; i++) {
-      const key = `${cursor.getFullYear()}-${cursor.getMonth() + 1}-${cursor.getDate()}`;
-      if (history[key] && history[key].focusSessions > 0) {
-        streak += 1;
-        cursor.setDate(cursor.getDate() - 1);
-      } else if (i === 0) {
-        // hoy sin sesiones todavía no rompe la racha de días anteriores
-        cursor.setDate(cursor.getDate() - 1);
-      } else {
-        break;
-      }
-    }
-    return streak;
-  }
-
-  function renderStats() {
-    const history = loadJSON(STORAGE_KEYS.HISTORY, {});
-    const key = todayKey();
-    const day = history[key] || { focusSessions: 0, focusSeconds: 0, breaks: 0, entries: [] };
-
-    el.statFocusSessions.textContent = String(day.focusSessions);
-    el.statFocusMinutes.textContent = `${Math.round(day.focusSeconds / 60)}m`;
-    el.statBreaks.textContent = String(day.breaks);
-    el.statStreak.textContent = String(computeStreak(history));
-
-    if (day.entries.length === 0) {
-      el.historyList.innerHTML = '<li class="history-list__empty">Todavía no hay sesiones registradas hoy.</li>';
+    if (phase === "focus") {
+      panel.classList.remove("is-break");
+      badge.textContent = "Enfoque";
+      document.getElementById("sessionCount").textContent = `Sesión ${state.round} / ${currentPreset.rounds}`;
+      document.getElementById("microState").textContent = "Mantén la concentración";
     } else {
-      el.historyList.innerHTML = day.entries
-        .map((entry) => {
-          const tagClass = entry.phase === "focus" ? "tag-focus" : "tag-break";
-          const label = entry.phase === "focus" ? "Enfoque" : entry.phase === "short" ? "Descanso corto" : "Descanso largo";
-          const mins = Math.round(entry.seconds / 60);
-          return `<li><span class="${tagClass}">${label}</span><em>${mins}m · ${entry.time}</em></li>`;
-        })
-        .join("");
+      panel.classList.add("is-break");
+      badge.textContent = phase === "short" ? "Descanso" : "Recreo";
+      document.getElementById("sessionCount").textContent = phase === "short" ? "Pausa rápida" : "Pausa larga";
+      document.getElementById("microState").textContent = "Respira profundo y relájate";
     }
+
+    renderTimer();
   }
 
-  function resetTodayStats() {
-    const history = loadJSON(STORAGE_KEYS.HISTORY, {});
-    delete history[todayKey()];
-    saveJSON(STORAGE_KEYS.HISTORY, history);
-    renderStats();
-    showToast("Historial de hoy borrado", "eraser");
-  }
+  /* ===================== CONFIGURACIONES Y ARCHIVOS ===================== */
 
-  /* ===================== PANELES / UI ===================== */
+  function applyTheme(themeName) {
+    document.body.setAttribute("data-theme", themeName);
+    state.settings.theme = themeName;
 
-  function openPanel(panelEl) {
-    closeAllPanels();
-    panelEl.classList.remove("hidden");
-    panelEl.classList.add("is-open");
-    el.overlay.classList.remove("hidden");
-    el.overlay.classList.add("is-open");
-  }
-
-  function closeAllPanels() {
-    [el.statsPanel, el.sidebar].forEach((p) => {
-      p.classList.remove("is-open");
-      if (window.innerWidth < 979) p.classList.add("hidden");
+    document.querySelectorAll(".theme-swatch").forEach(swatch => {
+      if (swatch.getAttribute("data-theme-choice") === themeName) {
+        swatch.classList.add("is-active");
+      } else {
+        swatch.classList.remove("is-active");
+      }
     });
-    el.overlay.classList.remove("is-open");
-    el.overlay.classList.add("hidden");
-  }
-
-  function togglePanel(panelEl) {
-    const isOpen = panelEl.classList.contains("is-open");
-    if (isOpen) closeAllPanels();
-    else openPanel(panelEl);
-  }
-
-  /* ===================== TEMA ===================== */
-
-  function applyTheme(theme) {
-    state.settings.theme = theme;
-    el.body.dataset.theme = theme;
-    el.themeSwatches.forEach((sw) => sw.classList.toggle("is-active", sw.dataset.themeChoice === theme));
     persistSettings();
   }
 
-  function toggleTheme() {
-    applyTheme(state.settings.theme === "cyberpunk" ? "liquid" : "cyberpunk");
-    showToast(`Tema: ${state.settings.theme === "cyberpunk" ? "Cyberpunk" : "Liquid Glass"}`, "palette");
+  // Lógica para guardar la imagen personalizada en LocalStorage (Base64)
+  function handleBgUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    if (file.size > 2 * 1024 * 1024) {
+      alert("La imagen es demasiado grande. Por favor, selecciona una imagen de menos de 2MB para un rendimiento fluido.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = function (event) {
+      const base64String = event.target.result;
+      try {
+        localStorage.setItem(STORAGE_KEYS.CUSTOM_BG, base64String);
+        applyCustomBg(base64String);
+        showToast("Fondo de pantalla personalizado aplicado", "image");
+      } catch (err) {
+        alert("Hubo un problema al guardar la imagen localmente. El tamaño sigue siendo excesivo.");
+      }
+    };
+    reader.readAsDataURL(file);
   }
 
-  /* ===================== AJUSTES / PERSISTENCIA ===================== */
+  function applyCustomBg(base64String) {
+    if (base64String) {
+      document.body.classList.add("has-custom-bg");
+      document.body.style.setProperty("--custom-bg-img", `url(${base64String})`);
+      document.getElementById("bgStatus").textContent = "Fondo personalizado activo.";
+    } else {
+      document.body.classList.remove("has-custom-bg");
+      document.body.style.removeProperty("--custom-bg-img");
+      document.getElementById("bgStatus").textContent = "Sin fondo personalizado activo.";
+    }
+  }
+
+  function removeCustomBg() {
+    localStorage.removeItem(STORAGE_KEYS.CUSTOM_BG);
+    applyCustomBg(null);
+    showToast("Fondo de pantalla personalizado eliminado", "image-off");
+  }
+
+  function applyMode(modeName) {
+    state.mode = modeName;
+    document.querySelectorAll(".mode-btn").forEach(btn => {
+      if (btn.getAttribute("data-mode") === modeName) {
+        btn.classList.add("is-active");
+      } else {
+        btn.classList.remove("is-active");
+      }
+    });
+
+    // Resetear contenedores de display
+    const timeDisplay = document.getElementById("timeReadout");
+    const cubeDisplay = document.getElementById("cubeReadout");
+    const cubePanel = document.getElementById("cubePanel");
+
+    pauseTimer();
+
+    if (modeName === "speedcuber") {
+      timeDisplay.classList.add("hidden");
+      cubeDisplay.classList.remove("hidden");
+      cubePanel.classList.remove("hidden");
+      document.getElementById("resetBtn").style.display = "none";
+      document.getElementById("startPauseBtn").style.display = "none";
+      document.getElementById("skipBtn").style.display = "none";
+      document.querySelector(".session-label").classList.add("hidden");
+      document.querySelector(".keyboard-hints").innerHTML = `
+        <span><kbd>Espacio (Mantener)</kbd> Inspeccionar WCA</span>
+        <span><kbd>Espacio (Soltar)</kbd> Iniciar Carrera</span>
+      `;
+      Cube.resetCubeState();
+    } else {
+      timeDisplay.classList.remove("hidden");
+      cubeDisplay.classList.add("hidden");
+      cubePanel.classList.add("hidden");
+      document.getElementById("resetBtn").style.display = "inline-flex";
+      document.getElementById("startPauseBtn").style.display = "inline-flex";
+      document.getElementById("skipBtn").style.display = "inline-flex";
+      document.querySelector(".session-label").classList.remove("hidden");
+      document.querySelector(".keyboard-hints").innerHTML = `
+        <span><kbd>Espacio</kbd> Iniciar/Pausar</span>
+        <span><kbd>R</kbd> Reiniciar</span>
+        <span><kbd>M</kbd> Silenciar</span>
+      `;
+      setPhase("focus");
+    }
+  }
+
+  /* ===================== PANEL CONTROLES GENERALES / EVENTOS ===================== */
+
+  function toggleSidebar(sidebarId, forceOpen = null) {
+    const panel = document.getElementById(sidebarId);
+    const overlay = document.getElementById("overlay");
+    const isOpen = forceOpen !== null ? forceOpen : panel.classList.contains("hidden");
+
+    if (isOpen) {
+      panel.classList.remove("hidden");
+      setTimeout(() => panel.classList.add("is-open"), 10);
+      overlay.classList.remove("hidden");
+      setTimeout(() => overlay.classList.add("is-open"), 10);
+    } else {
+      panel.classList.remove("is-open");
+      overlay.classList.remove("is-open");
+      setTimeout(() => {
+        panel.classList.add("hidden");
+        overlay.classList.add("hidden");
+      }, 300);
+    }
+  }
+
+  function closeAllPanels() {
+    ["sidebar", "statsPanel"].forEach(id => {
+      const panel = document.getElementById(id);
+      if (panel) {
+        panel.classList.remove("is-open");
+        setTimeout(() => panel.classList.add("hidden"), 300);
+      }
+    });
+    const overlay = document.getElementById("overlay");
+    overlay.classList.remove("is-open");
+    setTimeout(() => overlay.classList.add("hidden"), 300);
+  }
+
+  function showToast(text, iconName = "info") {
+    const toast = document.createElement("div");
+    toast.className = "toast";
+    toast.innerHTML = `<i data-lucide="${iconName}"></i> <span>${text}</span>`;
+    document.body.appendChild(toast);
+    if (window.lucide) window.lucide.createIcons();
+
+    setTimeout(() => toast.classList.add("is-visible"), 10);
+    setTimeout(() => {
+      toast.classList.remove("is-visible");
+      setTimeout(() => toast.remove(), 400);
+    }, 3500);
+  }
 
   function persistSettings() {
-    saveJSON(STORAGE_KEYS.SETTINGS, state.settings);
+    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(state.settings));
   }
 
   function loadSettings() {
-    const saved = loadJSON(STORAGE_KEYS.SETTINGS, null);
+    const saved = localStorage.getItem(STORAGE_KEYS.SETTINGS);
     if (saved) {
-      state.settings = Object.assign({}, state.settings, saved);
-      state.settings.custom = Object.assign({}, state.settings.custom, saved.custom || {});
+      try {
+        state.settings = { ...state.settings, ...JSON.parse(saved) };
+      } catch (e) {}
     }
+
+    // Cargar fondo personalizado
+    const customBg = localStorage.getItem(STORAGE_KEYS.CUSTOM_BG);
+    if (customBg) applyCustomBg(customBg);
   }
 
   function applySettingsToUI() {
     applyTheme(state.settings.theme);
-    el.autoStartToggle.checked = state.settings.autoStart;
-    el.strictModeToggle.checked = state.settings.strictMode;
-    el.alarmSelect.value = state.settings.alarmSound;
-    el.alarmVolume.value = String(state.settings.alarmVolume);
-    el.ambientSelect.value = state.settings.ambientSound;
-    el.ambientVolume.value = String(state.settings.ambientVolume);
-    el.customFocus.value = String(state.settings.custom.focus);
-    el.customShort.value = String(state.settings.custom.short);
-    el.customLong.value = String(state.settings.custom.long);
-    el.customRounds.value = String(state.settings.custom.rounds);
-  }
+    document.getElementById("autoStartToggle").checked = state.settings.autoStart;
+    document.getElementById("strictModeToggle").checked = state.settings.strictMode;
+    document.getElementById("alarmSelect").value = state.settings.alarmSound;
+    document.getElementById("alarmVolume").value = state.settings.alarmVolume;
+    document.getElementById("ambientSelect").value = state.settings.ambientSound;
+    document.getElementById("ambientVolume").value = state.settings.ambientVolume;
 
-  /* ===================== EVENTOS ===================== */
+    // Sincronizar presets del Personalizado
+    document.getElementById("customFocus").value = state.settings.customPreset.focus;
+    document.getElementById("customShort").value = state.settings.customPreset.short;
+    document.getElementById("customLong").value = state.settings.customPreset.long;
+    document.getElementById("customRounds").value = state.settings.customPreset.rounds;
+    document.getElementById("customAmbient").value = state.settings.customPreset.ambient;
+  }
 
   function bindEvents() {
-    el.modeButtons.forEach((btn) => {
-      btn.addEventListener("click", () => switchMode(btn.dataset.mode));
+    // Selectores principales de modo
+    document.querySelectorAll(".mode-btn").forEach(btn => {
+      btn.addEventListener("click", (e) => {
+        applyMode(btn.getAttribute("data-mode"));
+      });
     });
 
-    el.startPauseBtn.addEventListener("click", () => {
+    // Controladores del cronómetro principal
+    document.getElementById("startPauseBtn").addEventListener("click", () => {
+      if (state.isRunning) pauseTimer();
+      else startTimer();
+    });
+    document.getElementById("resetBtn").addEventListener("click", resetTimer);
+    document.getElementById("skipBtn").addEventListener("click", skipPhase);
+
+    // Botones de toggle laterales
+    document.getElementById("themeToggleBtn").addEventListener("click", () => {
+      const themes = ["cyberpunk", "liquid", "matrix", "nordic"];
+      let nextIndex = (themes.indexOf(state.settings.theme) + 1) % themes.length;
+      applyTheme(themes[nextIndex]);
+      showToast(`Tema visual cambiado a: ${themes[nextIndex]}`, "palette");
+    });
+
+    document.getElementById("statsToggleBtn").addEventListener("click", () => toggleSidebar("statsPanel"));
+    document.getElementById("sidebarToggleBtn").addEventListener("click", () => toggleSidebar("sidebar"));
+    document.getElementById("overlay").addEventListener("click", closeAllPanels);
+
+    // Conectar eventos dinámicos de botones cerrar ("X")
+    document.querySelectorAll(".panel-close-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const targetId = btn.getAttribute("data-close");
+        toggleSidebar(targetId, false);
+      });
+    });
+
+    // Configuraciones interactivas
+    document.getElementById("autoStartToggle").addEventListener("change", (e) => {
+      state.settings.autoStart = e.target.checked;
+      persistSettings();
+    });
+
+    document.getElementById("strictModeToggle").addEventListener("change", (e) => {
+      state.settings.strictMode = e.target.checked;
+      persistSettings();
+    });
+
+    document.getElementById("alarmSelect").addEventListener("change", (e) => {
+      state.settings.alarmSound = e.target.value;
+      persistSettings();
+      AudioEngine.playAlarm(e.target.value);
+    });
+
+    document.getElementById("alarmVolume").addEventListener("input", (e) => {
+      state.settings.alarmVolume = parseInt(e.target.value);
+      persistSettings();
+    });
+
+    document.getElementById("ambientSelect").addEventListener("change", (e) => {
+      state.settings.ambientSound = e.target.value;
+      persistSettings();
+      if (state.isRunning) AudioEngine.playAmbient(e.target.value);
+    });
+
+    document.getElementById("ambientVolume").addEventListener("input", (e) => {
+      state.settings.ambientVolume = parseInt(e.target.value);
+      persistSettings();
+      AudioEngine.updateAmbientVolume();
+    });
+
+    document.getElementById("muteAllBtn").addEventListener("click", () => {
+      state.settings.muted = !state.settings.muted;
+      AudioEngine.muteAll(state.settings.muted);
+      showToast(state.settings.muted ? "Audio silenciado" : "Audio activado", state.settings.muted ? "volume-x" : "volume-2");
+    });
+
+    // Gestión del fondo personalizado
+    document.getElementById("bgUploadInput").addEventListener("change", handleBgUpload);
+    document.getElementById("removeBgBtn").addEventListener("click", removeCustomBg);
+
+    // Ajustes de modo Personalizado
+    document.getElementById("applyCustomBtn").addEventListener("click", () => {
+      const focus = parseInt(document.getElementById("customFocus").value);
+      const short = parseInt(document.getElementById("customShort").value);
+      const long = parseInt(document.getElementById("customLong").value);
+      const rounds = parseInt(document.getElementById("customRounds").value);
+      const ambient = document.getElementById("customAmbient").value;
+
+      state.settings.customPreset = { focus, short, long, rounds, ambient };
+      state.settings.ambientSound = ambient;
+      document.getElementById("ambientSelect").value = ambient;
+
+      persistSettings();
+      applyMode("custom");
+      showToast("Modo personalizado guardado y activado", "check");
+    });
+
+    // Atajos de teclado robustos
+    window.addEventListener("keydown", (e) => {
+      const tag = (e.target.tagName || "").toLowerCase();
+      const isTyping = tag === "input" || tag === "select" || tag === "textarea";
+
       if (state.mode === "speedcuber") {
-        Cube.handleSpacebar();
-      } else {
-        toggleTimer();
+        Cube.handleKeydown(e);
+        return;
       }
-    });
-    el.resetBtn.addEventListener("click", resetTimer);
-    el.skipBtn.addEventListener("click", skipPhase);
 
-    el.newScrambleBtn.addEventListener("click", () => Cube.newScramble());
-    el.clearTimesBtn.addEventListener("click", () => Cube.clearSolves());
-
-    el.statsToggleBtn.addEventListener("click", () => togglePanel(el.statsPanel));
-    el.sidebarToggleBtn.addEventListener("click", () => togglePanel(el.sidebar));
-    el.themeToggleBtn.addEventListener("click", toggleTheme);
-    el.overlay.addEventListener("click", closeAllPanels);
-
-    $$("[data-close]").forEach((btn) => {
-      btn.addEventListener("click", () => closeAllPanels());
-    });
-
-    el.themeSwatches.forEach((sw) => {
-      sw.addEventListener("click", () => applyTheme(sw.dataset.themeChoice));
-    });
-
-    el.applyCustomBtn.addEventListener("click", () => {
-      state.settings.custom = {
-        focus: clampInt(el.customFocus.value, 1, 180, 25),
-        short: clampInt(el.customShort.value, 1, 60, 5),
-        long: clampInt(el.customLong.value, 1, 90, 15),
-        rounds: clampInt(el.customRounds.value, 1, 12, 4),
-      };
-      persistSettings();
-      switchMode("custom");
-      showToast("Configuración personalizada aplicada", "check");
-    });
-
-    el.autoStartToggle.addEventListener("change", () => {
-      state.settings.autoStart = el.autoStartToggle.checked;
-      persistSettings();
-    });
-    el.strictModeToggle.addEventListener("change", () => {
-      state.settings.strictMode = el.strictModeToggle.checked;
-      persistSettings();
-    });
-
-    el.alarmSelect.addEventListener("change", () => {
-      state.settings.alarmSound = el.alarmSelect.value;
-      persistSettings();
-    });
-    el.alarmVolume.addEventListener("input", () => {
-      state.settings.alarmVolume = Number(el.alarmVolume.value);
-      persistSettings();
-    });
-
-    el.ambientSelect.addEventListener("change", () => {
-      state.settings.ambientSound = el.ambientSelect.value;
-      persistSettings();
-      AudioEngine.refreshAmbient();
-    });
-    el.ambientVolume.addEventListener("input", () => {
-      state.settings.ambientVolume = Number(el.ambientVolume.value);
-      AudioEngine.setAmbientVolume(state.settings.ambientVolume);
-      persistSettings();
-    });
-
-    el.muteAllBtn.addEventListener("click", toggleMute);
-    el.resetStatsBtn.addEventListener("click", resetTodayStats);
-
-    document.addEventListener("keydown", handleKeydown);
-
-    window.addEventListener("resize", () => {
-      if (window.innerWidth >= 979) {
-        el.statsPanel.classList.remove("is-open");
-        el.sidebar.classList.remove("is-open");
-        el.overlay.classList.add("hidden");
-      }
-    });
-  }
-
-  function clampInt(value, min, max, fallback) {
-    const n = parseInt(value, 10);
-    if (Number.isNaN(n)) return fallback;
-    return Math.min(max, Math.max(min, n));
-  }
-
-  function toggleMute() {
-    state.settings.muted = !state.settings.muted;
-    AudioEngine.muteAll(state.settings.muted);
-    persistSettings();
-    showToast(state.settings.muted ? "Audio silenciado" : "Audio activado", state.settings.muted ? "volume-x" : "volume-2");
-  }
-
-  function handleKeydown(e) {
-    const tag = (e.target.tagName || "").toLowerCase();
-    const isTyping = tag === "input" || tag === "select" || tag === "textarea";
-
-    if (e.code === "Space") {
       if (isTyping) return;
-      e.preventDefault();
-      if (state.mode === "speedcuber") {
-        Cube.handleSpacebar();
-      } else {
-        toggleTimer();
+
+      if (e.code === "Space") {
+        e.preventDefault();
+        if (state.isRunning) pauseTimer();
+        else startTimer();
+      } else if (e.key.toLowerCase() === "r") {
+        resetTimer();
+      } else if (e.key.toLowerCase() === "m") {
+        state.settings.muted = !state.settings.muted;
+        AudioEngine.muteAll(state.settings.muted);
+        showToast(state.settings.muted ? "Audio silenciado" : "Audio activado", state.settings.muted ? "volume-x" : "volume-2");
+      } else if (e.key === "Escape") {
+        closeAllPanels();
       }
-      return;
-    }
+    });
 
-    if (isTyping) return;
+    window.addEventListener("keyup", (e) => {
+      if (state.mode === "speedcuber") {
+        Cube.handleKeyup(e);
+      }
+    });
 
-    if (e.key.toLowerCase() === "r") {
-      resetTimer();
-    } else if (e.key.toLowerCase() === "m") {
-      toggleMute();
-    } else if (e.key === "Escape") {
-      closeAllPanels();
-    }
+    // Swatches manuales
+    document.querySelectorAll(".theme-swatch").forEach(swatch => {
+      swatch.addEventListener("click", () => {
+        applyTheme(swatch.getAttribute("data-theme-choice"));
+      });
+    });
   }
 
-  /* ===================== INIT ===================== */
+  /* ===================== ENTRADA PRINCIPAL ===================== */
 
   function init() {
     loadSettings();
     applySettingsToUI();
-    applyModeUI(state.mode);
-    setPhase("focus", { silent: true });
+    applyMode("standard");
     renderTimer();
     Cube.init();
-    renderStats();
+    Stats.init();
+    Stats.render();
     bindEvents();
 
     if (window.lucide) window.lucide.createIcons();
-
-    // Reintenta crear los iconos por si el script de Lucide (defer) carga después
-    window.addEventListener("load", () => {
-      if (window.lucide) window.lucide.createIcons();
-      AudioEngine.refreshAmbient();
-    });
-
-    showToast("Ethos Crono listo. ¡A producir!", "zap");
   }
 
   document.addEventListener("DOMContentLoaded", init);

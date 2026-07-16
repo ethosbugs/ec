@@ -1,24 +1,23 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
-<title>Ethos Crono — Pomodoro Avanzado</title>
-<meta name="description" content="Temporizador Pomodoro avanzado y ultra-personalizable para programadores, speedcubers y productividad general.">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+  <title>Ethos Crono — Pomodoro Avanzado</title>
+  <meta name="description" content="Temporizador Pomodoro avanzado y ultra-personalizable para programadores, speedcubers y productividad general.">
 
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Share+Tech+Mono&display=swap" rel="stylesheet">
 
-<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
 
-<link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css">
 </head>
 <body data-theme="cyberpunk">
 
 <div class="app-shell">
 
-  <!-- ===================== TOPBAR ===================== -->
   <header class="topbar">
     <div class="brand">
       <svg class="brand__logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -53,13 +52,10 @@
     </div>
   </header>
 
-  <!-- ===================== MAIN ===================== -->
   <main class="main-grid">
 
-    <!-- ---------- TIMER STAGE (centrado robusto) ---------- -->
     <div class="timer-stage">
 
-      <!-- ---------- TIMER PANEL ---------- -->
       <section class="timer-panel" aria-label="Temporizador">
         <div class="timer-panel__glow" aria-hidden="true"></div>
 
@@ -68,7 +64,6 @@
           <span id="sessionCount" class="session-count">Sesión 1 / 4</span>
         </div>
 
-        <!-- Speedcuber inspection ring -->
         <div id="inspectionWrap" class="inspection-wrap hidden">
           <p class="inspection-label"><i data-lucide="eye"></i> Inspección WCA — mantén pulsado <kbd>Espacio</kbd></p>
           <div id="inspectionTime" class="inspection-time">15</div>
@@ -108,7 +103,6 @@
         </div>
       </section>
 
-      <!-- ---------- SPEEDCUBER SCRAMBLE / TIMES ---------- -->
       <section id="cubePanel" class="cube-panel hidden" aria-label="Panel Speedcuber">
         <div class="panel-heading">
           <i data-lucide="shuffle"></i>
@@ -135,7 +129,6 @@
           <div><span>Ao12</span><strong id="ao12Solve">—</strong></div>
         </div>
 
-        <!-- Mini cubo Rubik 2D (net) esquina inferior derecha -->
         <div class="mini-cube-wrap" title="Vista previa de mezcla (colores decorativos)">
           <svg id="miniCubeNet" viewBox="0 0 132 100" class="mini-cube-net"></svg>
         </div>
@@ -143,7 +136,6 @@
 
     </div>
 
-    <!-- ---------- STATS PANEL ---------- -->
     <aside id="statsPanel" class="stats-panel hidden" aria-label="Estadísticas del día">
       <div class="panel-heading panel-heading--sticky">
         <i data-lucide="bar-chart-3"></i>
@@ -186,7 +178,6 @@
       </button>
     </aside>
 
-    <!-- ---------- SIDEBAR SETTINGS ---------- -->
     <aside id="sidebar" class="sidebar hidden" aria-label="Ajustes">
       <div class="panel-heading panel-heading--sticky">
         <i data-lucide="settings-2"></i>

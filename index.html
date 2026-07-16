@@ -13,8 +13,21 @@
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js" defer></script>
 
   <link rel="stylesheet" href="style.css">
+
+  <!-- Evita el "flash" de tema incorrecto: aplicamos el tema guardado ANTES de pintar -->
+  <script>
+    (function () {
+      try {
+        var raw = localStorage.getItem('ethos_settings');
+        var theme = raw ? (JSON.parse(raw).theme || 'cyberpunk') : 'cyberpunk';
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'cyberpunk');
+      }
+    })();
+  </script>
 </head>
-<body data-theme="cyberpunk">
+<body>
 
 <div class="app-shell">
 
@@ -29,7 +42,7 @@
 
     <nav class="mode-selector" role="tablist">
       <button class="mode-btn is-active" data-mode="standard" role="tab" aria-selected="true">
-        <i data-lucide="hourglass"></i> Estándar
+        <i data-lucide="hourglass"></i> Enfoque
       </button>
       <button class="mode-btn" data-mode="speedcuber" role="tab" aria-selected="false">
         <i data-lucide="box"></i> Speedcuber
@@ -49,7 +62,7 @@
     </div>
   </header>
 
-  <main class="main-grid">
+  <main id="mainGrid" class="main-grid">
 
     <section class="timer-panel">
       <div id="sessionBadge" class="session-badge">Enfoque</div>
@@ -63,7 +76,7 @@
 
         <div class="timer-readout-wrap">
           <span id="timeReadout" class="time-readout">25:00</span>
-          
+
           <span id="cubeReadout" class="cube-readout hidden">0.00</span>
 
           <div id="inspectionWrap" class="inspection-wrap hidden">
@@ -98,7 +111,7 @@
           </div>
         </div>
         <div id="scrambleText" class="scramble-text">U R2 F L D' B R' F2 D' U' B2 L2 D2 L' F' R2 D B'</div>
-        
+
         <div class="cube-visual-net">
           <svg id="miniCubeNet" class="mini-cube-net" viewBox="0 0 145 105"></svg>
         </div>
@@ -134,7 +147,7 @@
       <h2>Estadísticas de Hoy</h2>
       <button class="panel-close-btn" aria-label="Cerrar Panel"><i data-lucide="x"></i></button>
     </div>
-    
+
     <div class="panel-content">
       <div class="stats-summary">
         <div class="stat-card">
@@ -167,7 +180,7 @@
 
   <aside id="sidebar" class="panel hidden" aria-hidden="true">
     <div class="panel-header">
-      <h2>Ajustes Pomodoro</h2>
+      <h2>Ajustes</h2>
       <button class="panel-close-btn" aria-label="Cerrar Panel"><i data-lucide="x"></i></button>
     </div>
 
@@ -176,9 +189,13 @@
         <h3>Temas de Diseño</h3>
         <div class="theme-grid">
           <button class="theme-swatch is-active" data-theme-choice="cyberpunk" style="--swatch-color: #ff00c8;" title="Cyberpunk"></button>
-          <button class="theme-swatch" data-theme-choice="liquid" style="--swatch-color: #00ffcc;" title="Liquid Glass"></button>
+          <button class="theme-swatch" data-theme-choice="liquid" style="--swatch-color: #6a8dff;" title="Liquid Glass"></button>
           <button class="theme-swatch" data-theme-choice="matrix" style="--swatch-color: #00ff00;" title="Matrix Neon"></button>
           <button class="theme-swatch" data-theme-choice="nordic" style="--swatch-color: #88c0d0;" title="Nordic Frost"></button>
+          <button class="theme-swatch" data-theme-choice="sunset" style="--swatch-color: #ff7a45;" title="Sunset Ember"></button>
+          <button class="theme-swatch" data-theme-choice="sakura" style="--swatch-color: #ff8fb3;" title="Sakura"></button>
+          <button class="theme-swatch" data-theme-choice="ocean" style="--swatch-color: #26c9c3;" title="Deep Ocean"></button>
+          <button class="theme-swatch" data-theme-choice="mono" style="--swatch-color: #e8e8e8;" title="Mono Amoled"></button>
         </div>
       </div>
 
@@ -195,7 +212,14 @@
       </div>
 
       <div class="settings-section">
-        <h3>Temporizadores</h3>
+        <h3>Temporizador de Enfoque</h3>
+
+        <div class="preset-row">
+          <button class="preset-chip" data-preset="25,5,15,4">Clásico 25/5</button>
+          <button class="preset-chip" data-preset="50,10,20,3">Programador 50/10</button>
+          <button class="preset-chip" data-preset="90,20,30,2">Deep Work 90/20</button>
+        </div>
+
         <div class="field-row">
           <label for="customFocus">Enfoque (Minutos)</label>
           <input type="number" id="customFocus" min="1" max="180" value="25">
@@ -229,7 +253,7 @@
 
       <div class="settings-section">
         <h3>Audio Sintetizado (Web Audio API)</h3>
-        
+
         <div class="field-row">
           <label for="alarmSelect">Sonido de alarma</label>
           <select id="alarmSelect">

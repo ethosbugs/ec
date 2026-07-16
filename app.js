@@ -5,14 +5,15 @@
 
 // --- ESTADOS Y CONFIGURACIÓN GLOBAL ---
 const state = {
-  mode: 'standard', // 'standard', 'speedcuber', 'custom'
+  mode: 'standard', // 'standard', 'speedcuber'
   phase: 'focus',   // 'focus', 'shortBreak', 'longBreak'
   isRunning: false,
-  duration: 25 * 60, // en segundos
-  timeLeft: 25 * 60,
+  duration: 25 * 60,   // duración total de la fase actual, en segundos
+  timeLeft: 25 * 60,   // segundos restantes (se recalcula desde endAt, nunca se decrementa a ciegas)
+  endAt: null,         // timestamp (ms) en el que debe terminar la fase — ancla contra drift/throttling
   round: 1,
   totalRounds: 4,
-  
+
   // Ajustes por defecto
   settings: {
     focusMin: 25,
@@ -25,6 +26,7 @@ const state = {
     alarmVolume: 0.7,
     ambientSound: 'none',
     ambientVolume: 0.35,
+    muted: false,
     theme: 'cyberpunk',
     customBg: null
   },
@@ -34,9 +36,7 @@ const state = {
   solves: [],
   inspectionActive: false,
   inspectionTime: 15,
-  isHoldingSpace: false,
-  spaceHoldTimeout: null,
-  spacePressStart: null,
+  inspectionInterval: null,
   isSolving: false,
   solveStart: null,
   solveInterval: null,
@@ -47,7 +47,7 @@ const state = {
     focusMinutes: 0,
     breaks: 0,
     streak: 0,
-    history: [] // { type: 'Foco'|'Descanso', date: '12:34', duration: '25m' }
+    history: [] // { type: 'Enfoque'|'Descanso', time: '12:34', duration: '25m' }
   }
 };
 
@@ -59,7 +59,8 @@ const nodes = {
   statsPanel: document.getElementById('statsPanel'),
   sidebar: document.getElementById('sidebar'),
   overlay: document.getElementById('overlay'),
-  
+  mainGrid: document.getElementById('mainGrid'),
+
   // Timer Display
   sessionBadge: document.getElementById('sessionBadge'),
   sessionCount: document.getElementById('sessionCount'),
@@ -96,7 +97,6 @@ const nodes = {
   customShort: document.getElementById('customShort'),
   customLong: document.getElementById('customLong'),
   customRounds: document.getElementById('customRounds'),
-  customAmbient: document.getElementById('customAmbient'),
   applyCustomBtn: document.getElementById('applyCustomBtn'),
   autoStartToggle: document.getElementById('autoStartToggle'),
   strictModeToggle: document.getElementById('strictModeToggle'),
@@ -119,11 +119,17 @@ const nodes = {
 let audioCtx = null;
 let ambientSource = null;
 let ambientGainNode = null;
-let isMuted = false;
+
+function isMuted() {
+  return !!state.settings.muted;
+}
 
 function initAudio() {
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
   }
 }
 
@@ -137,7 +143,6 @@ function createNoiseBuffer(type) {
   for (let i = 0; i < bufferSize; i++) {
     const white = Math.random() * 2 - 1;
     if (type === 'brown') {
-      // Filtro de Brown Noise
       output[i] = (lastOut + (0.02 * white)) / 1.02;
       lastOut = output[i];
       output[i] *= 3.5; // Compensación de volumen
@@ -150,31 +155,27 @@ function createNoiseBuffer(type) {
 
 // Sintetizar lluvia
 function playSynthesizedRain() {
-  stopAmbient();
-  initAudio();
-  
-  // Combinar ruido rosa/marrón con impulsos aleatorios para simular gotas
   const noise = audioCtx.createBufferSource();
   noise.buffer = createNoiseBuffer('brown');
-  
+
   const lowpass = audioCtx.createBiquadFilter();
   lowpass.type = 'lowpass';
   lowpass.frequency.setValueAtTime(800, audioCtx.currentTime);
 
   ambientGainNode = audioCtx.createGain();
-  ambientGainNode.gain.setValueAtTime(isMuted ? 0 : state.settings.ambientVolume, audioCtx.currentTime);
+  ambientGainNode.gain.setValueAtTime(isMuted() ? 0 : state.settings.ambientVolume, audioCtx.currentTime);
 
   noise.connect(lowpass);
   lowpass.connect(ambientGainNode);
   ambientGainNode.connect(audioCtx.destination);
-  
+
   noise.loop = true;
   noise.start(0);
   ambientSource = noise;
 }
 
 function startAmbient() {
-  if (isMuted || state.settings.ambientSound === 'none') {
+  if (isMuted() || state.settings.ambientSound === 'none') {
     stopAmbient();
     return;
   }
@@ -189,13 +190,14 @@ function startAmbient() {
 
   const noiseNode = audioCtx.createBufferSource();
   noiseNode.buffer = createNoiseBuffer(type);
-  
+
   ambientGainNode = audioCtx.createGain();
-  ambientGainNode.gain.setValueAtTime(state.settings.ambientVolume, audioCtx.currentTime);
+  // Se respeta el silencio global también para white/brown noise
+  ambientGainNode.gain.setValueAtTime(isMuted() ? 0 : state.settings.ambientVolume, audioCtx.currentTime);
 
   noiseNode.connect(ambientGainNode);
   ambientGainNode.connect(audioCtx.destination);
-  
+
   noiseNode.loop = true;
   noiseNode.start(0);
   ambientSource = noiseNode;
@@ -203,14 +205,15 @@ function startAmbient() {
 
 function stopAmbient() {
   if (ambientSource) {
-    try { ambientSource.stop(); } catch(e){}
+    try { ambientSource.stop(); } catch (e) { /* ya estaba detenido */ }
     ambientSource = null;
   }
+  ambientGainNode = null;
 }
 
 // Sintetizar Alarma
 function playAlarm() {
-  if (isMuted || state.settings.alarmSound === 'none') return;
+  if (isMuted() || state.settings.alarmSound === 'none') return;
   initAudio();
 
   const now = audioCtx.currentTime;
@@ -223,32 +226,29 @@ function playAlarm() {
   gain.connect(audioCtx.destination);
 
   if (type === 'bell') {
-    // Campana Tibetana (Sintetizador FM Simple con decaimiento largo)
     osc.type = 'sine';
     osc.frequency.setValueAtTime(440, now);
     osc.frequency.exponentialRampToValueAtTime(110, now + 3);
-    
+
     gain.gain.setValueAtTime(0, now);
     gain.gain.linearRampToValueAtTime(vol, now + 0.05);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 3.5);
-    
+
     osc.start(now);
     osc.stop(now + 4);
   } else if (type === 'synth') {
-    // Pitido Synth Elegante (Arpegio rápido de ondas triangulares)
     osc.type = 'triangle';
-    osc.frequency.setValueAtTime(587.33, now); // D5
-    osc.frequency.setValueAtTime(880, now + 0.15); // A5
-    osc.frequency.setValueAtTime(1174.66, now + 0.3); // D6
-    
+    osc.frequency.setValueAtTime(587.33, now);
+    osc.frequency.setValueAtTime(880, now + 0.15);
+    osc.frequency.setValueAtTime(1174.66, now + 0.3);
+
     gain.gain.setValueAtTime(0, now);
     gain.gain.linearRampToValueAtTime(vol, now + 0.05);
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.8);
-    
+
     osc.start(now);
     osc.stop(now + 1);
   } else if (type === 'chime') {
-    // Carillón Digital
     osc.type = 'sine';
     osc.frequency.setValueAtTime(880, now);
     osc.frequency.setValueAtTime(987.77, now + 0.1);
@@ -270,13 +270,13 @@ function loadData() {
   const localSolves = localStorage.getItem('ethos_solves');
 
   if (localSettings) {
-    state.settings = { ...state.settings, ...JSON.parse(localSettings) };
+    try { state.settings = { ...state.settings, ...JSON.parse(localSettings) }; } catch (e) {}
   }
   if (localStats) {
-    state.stats = { ...state.stats, ...JSON.parse(localStats) };
+    try { state.stats = { ...state.stats, ...JSON.parse(localStats) }; } catch (e) {}
   }
   if (localSolves) {
-    state.solves = JSON.parse(localSolves);
+    try { state.solves = JSON.parse(localSolves) || []; } catch (e) { state.solves = []; }
   }
 
   // Comprobar racha diaria
@@ -303,22 +303,21 @@ function saveData() {
   localStorage.setItem('ethos_solves', JSON.stringify(state.solves));
 }
 
-// --- CONTROL DEL TEMPORIZADOR POMODORO ---
+// --- CONTROL DEL TEMPORIZADOR POMODORO (a prueba de drift/throttling) ---
 let timerInterval = null;
+const RING_CIRC = 848.23;
 
 function updateTimerDisplay() {
-  const m = Math.floor(state.timeLeft / 60).toString().padStart(2, '0');
-  const s = (state.timeLeft % 60).toString().padStart(2, '0');
+  const clamped = Math.max(0, state.timeLeft);
+  const m = Math.floor(clamped / 60).toString().padStart(2, '0');
+  const s = (clamped % 60).toString().padStart(2, '0');
   nodes.timeReadout.textContent = `${m}:${s}`;
 
-  // Actualizar anillo de progreso
-  let totalPhaseSeconds = state.duration;
-  const progress = totalPhaseSeconds > 0 ? (state.timeLeft / totalPhaseSeconds) : 0;
-  const strokeDashOffset = 848.23 * (1 - progress);
-  nodes.timerRingProgress.style.strokeDashoffset = strokeDashOffset;
+  const totalPhaseSeconds = state.duration;
+  const progress = totalPhaseSeconds > 0 ? (clamped / totalPhaseSeconds) : 0;
+  nodes.timerRingProgress.style.strokeDashoffset = RING_CIRC * (1 - progress);
 
-  // Clases urgentes
-  if (state.timeLeft < 30 && state.isRunning) {
+  if (clamped <= 30 && state.isRunning) {
     nodes.timeReadout.classList.add('is-urgent');
   } else {
     nodes.timeReadout.classList.remove('is-urgent');
@@ -332,23 +331,22 @@ function setPhase(phase) {
   if (phase === 'focus') {
     state.duration = state.settings.focusMin * 60;
     nodes.sessionBadge.textContent = 'Enfoque';
-    nodes.sessionBadge.style.background = 'var(--focus-grad)';
+    nodes.sessionBadge.style.background = '';
     nodes.microState.textContent = 'Concéntrate en tu tarea';
   } else if (phase === 'shortBreak') {
     state.duration = state.settings.shortMin * 60;
     nodes.sessionBadge.textContent = 'Descanso Corto';
-    nodes.sessionBadge.style.background = 'var(--break-grad)';
     nodes.timerPanel.classList.add('is-break');
     nodes.microState.textContent = 'Estira un poco tus músculos';
   } else if (phase === 'longBreak') {
     state.duration = state.settings.longMin * 60;
     nodes.sessionBadge.textContent = 'Descanso Largo';
-    nodes.sessionBadge.style.background = 'var(--break-grad)';
     nodes.timerPanel.classList.add('is-break');
     nodes.microState.textContent = 'Un buen respiro para reiniciar tu mente';
   }
 
   state.timeLeft = state.duration;
+  state.endAt = null;
   updateTimerDisplay();
   updateSessionInfo();
 }
@@ -357,10 +355,28 @@ function updateSessionInfo() {
   nodes.sessionCount.textContent = `Ronda ${state.round} / ${state.settings.rounds}`;
 }
 
+function tick() {
+  if (!state.isRunning || state.endAt === null) return;
+  const remainingMs = state.endAt - Date.now();
+  const remaining = Math.max(0, Math.round(remainingMs / 1000));
+
+  if (remaining !== state.timeLeft) {
+    state.timeLeft = remaining;
+    updateTimerDisplay();
+  }
+
+  if (remainingMs <= 0) {
+    endPhase();
+  }
+}
+
 function startTimer() {
   if (state.isRunning) return;
   initAudio();
   state.isRunning = true;
+  // Ancla: el final de la fase se fija respecto al reloj real, no a un contador manual.
+  state.endAt = Date.now() + state.timeLeft * 1000;
+
   nodes.startPauseBtn.classList.add('ctrl-btn--active');
   nodes.startPauseLabel.textContent = 'Pausar';
   nodes.startPauseBtn.querySelector('i').setAttribute('data-lucide', 'pause');
@@ -368,35 +384,32 @@ function startTimer() {
 
   startAmbient();
 
-  timerInterval = setInterval(() => {
-    if (state.timeLeft > 0) {
-      state.timeLeft--;
-      updateTimerDisplay();
-    } else {
-      endPhase();
-    }
-  }, 1000);
+  clearInterval(timerInterval);
+  timerInterval = setInterval(tick, 250);
 }
 
 function pauseTimer() {
   if (!state.isRunning) return;
-  
+
   if (state.settings.strictMode && state.phase === 'focus') {
     showToast('¡Modo estricto activo! No puedes pausar durante el foco.', 'shield-alert');
     return;
   }
 
   state.isRunning = false;
+  state.endAt = null;
   nodes.startPauseLabel.textContent = 'Reanudar';
   nodes.startPauseBtn.querySelector('i').setAttribute('data-lucide', 'play');
   lucide.createIcons();
   clearInterval(timerInterval);
+  timerInterval = null;
   stopAmbient();
 }
 
 function resetTimer() {
   pauseTimer();
   state.timeLeft = state.duration;
+  state.endAt = null;
   updateTimerDisplay();
   nodes.startPauseLabel.textContent = 'Iniciar';
   nodes.microState.textContent = 'Listo para empezar';
@@ -406,16 +419,14 @@ function endPhase() {
   pauseTimer();
   playAlarm();
 
-  // Registrar estadísticas en memoria
   const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   if (state.phase === 'focus') {
     state.stats.focusSessions++;
     state.stats.focusMinutes += state.settings.focusMin;
     state.stats.history.unshift({ type: 'Enfoque', time: timestamp, duration: `${state.settings.focusMin}m` });
-    
+
     showToast('¡Gran trabajo de enfoque completado!', 'award');
-    
-    // Siguiente fase de descanso
+
     if (state.round >= state.settings.rounds) {
       state.round = 1;
       setPhase('longBreak');
@@ -425,9 +436,9 @@ function endPhase() {
   } else {
     state.stats.breaks++;
     state.stats.history.unshift({ type: 'Descanso', time: timestamp, duration: `${state.phase === 'shortBreak' ? state.settings.shortMin : state.settings.longMin}m` });
-    
+
     showToast('Tiempo de descanso terminado. ¡A trabajar!', 'brain');
-    
+
     state.round++;
     setPhase('focus');
   }
@@ -442,6 +453,13 @@ function endPhase() {
   }
 }
 
+// Al volver a la pestaña, resincroniza de inmediato (evita saltos visuales tras throttling)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && state.isRunning) {
+    tick();
+  }
+});
+
 // --- MODO SPEEDCUBER (WCA SOLVER) ---
 const SCRAMBLE_MOVES = ["U", "D", "R", "L", "F", "B"];
 const SCRAMBLE_MODIFIERS = ["", "'", "2"];
@@ -449,40 +467,38 @@ const SCRAMBLE_MODIFIERS = ["", "'", "2"];
 function generateScramble() {
   let scramble = [];
   let lastMove = "";
-  
+
   for (let i = 0; i < 20; i++) {
     let move;
     do {
       move = SCRAMBLE_MOVES[Math.floor(Math.random() * SCRAMBLE_MOVES.length)];
     } while (move === lastMove);
-    
+
     let modifier = SCRAMBLE_MODIFIERS[Math.floor(Math.random() * SCRAMBLE_MODIFIERS.length)];
     scramble.push(move + modifier);
     lastMove = move;
   }
-  
+
   state.scramble = scramble.join(" ");
   nodes.scrambleText.textContent = state.scramble;
   drawMiniCubeNet();
 }
 
-// Dibujo decorativo y pseudo-aleatorio de una vista en 2D desplegada de Rubik
 function drawMiniCubeNet() {
   const colors = ["#ffffff", "#ff5800", "#009b48", "#cc0000", "#0046ad", "#ffd500"]; // U L F R B D
   let netHtml = '';
-  
+
   const drawFace = (x, y) => {
     let faceSvg = '';
     for (let row = 0; row < 3; row++) {
       for (let col = 0; col < 3; col++) {
         const randColor = colors[Math.floor(Math.random() * colors.length)];
-        faceSvg += `<rect x="${x + col*10}" y="${y + row*10}" width="9" height="9" rx="1.5" fill="${randColor}" stroke="rgba(0,0,0,0.4)" stroke-width="0.8"/>`;
+        faceSvg += `<rect x="${x + col * 10}" y="${y + row * 10}" width="9" height="9" rx="1.5" fill="${randColor}" stroke="rgba(0,0,0,0.4)" stroke-width="0.8"/>`;
       }
     }
     return faceSvg;
   };
 
-  // Coordenadas de red WCA estándar
   netHtml += drawFace(40, 5);   // UP
   netHtml += drawFace(5, 38);   // LEFT
   netHtml += drawFace(40, 38);  // FRONT
@@ -495,35 +511,32 @@ function drawMiniCubeNet() {
 
 function handleSpaceDown(e) {
   if (e.repeat) return;
-  
+
   if (state.mode === 'speedcuber' && !state.isSolving) {
     e.preventDefault();
     initAudio();
 
     if (!state.inspectionActive) {
-      // Iniciar inspección WCA
       state.inspectionActive = true;
       state.inspectionTime = 15;
       nodes.inspectionWrap.classList.remove('hidden');
       nodes.inspectionTime.textContent = state.inspectionTime;
       nodes.timeReadout.classList.add('hidden');
-      
-      state.spaceHoldTimeout = setInterval(() => {
+
+      clearInterval(state.inspectionInterval);
+      state.inspectionInterval = setInterval(() => {
         if (state.inspectionTime > 0) {
           state.inspectionTime--;
           nodes.inspectionTime.textContent = state.inspectionTime;
         } else {
-          // Si pasa la inspección (DNF o arranque obligado)
           triggerInspectionFinished();
         }
       }, 1000);
     } else {
-      // Si la inspección ya corre y mantenemos presionado espacio para arrancar el cronómetro
       nodes.microState.textContent = '¡Suelta para iniciar!';
       nodes.inspectionTime.style.color = 'var(--accent-1)';
     }
   } else if (state.mode === 'speedcuber' && state.isSolving) {
-    // Parar el resolver inmediatamente
     stopSolving();
   }
 }
@@ -535,13 +548,11 @@ function handleSpaceUp(e) {
 }
 
 function triggerInspectionFinished() {
-  clearInterval(state.spaceHoldTimeout);
+  clearInterval(state.inspectionInterval);
   nodes.inspectionWrap.classList.add('hidden');
-  nodes.timeReadout.classList.remove('hidden');
   nodes.inspectionTime.style.color = '';
   state.inspectionActive = false;
 
-  // Iniciar Cronómetro Exacto
   startSolving();
 }
 
@@ -552,21 +563,21 @@ function startSolving() {
   nodes.cubeReadout.classList.remove('hidden');
   nodes.microState.textContent = 'Resolviendo...';
 
+  clearInterval(state.solveInterval);
   state.solveInterval = setInterval(() => {
     const elapsed = (performance.now() - state.solveStart) / 1000;
     nodes.cubeReadout.textContent = elapsed.toFixed(2);
-  }, 10);
+  }, 30);
 }
 
 function stopSolving() {
   clearInterval(state.solveInterval);
   state.isSolving = false;
   const finalTime = ((performance.now() - state.solveStart) / 1000).toFixed(2);
-  
+
   nodes.cubeReadout.textContent = finalTime;
   nodes.microState.textContent = '¡Hecho!';
-  
-  // Registrar solve
+
   state.solves.unshift(parseFloat(finalTime));
   if (state.solves.length > 50) state.solves.pop();
 
@@ -591,23 +602,18 @@ function renderSolves() {
     nodes.solveList.appendChild(li);
   });
 
-  // Calcular mejores marcas
   const best = Math.min(...state.solves);
   nodes.bestSolve.textContent = `${best.toFixed(2)}s`;
 
-  // Calcular Average of 5 (Ao5) y Ao12
   nodes.ao5Solve.textContent = calculateAoN(5);
   nodes.ao12Solve.textContent = calculateAoN(12);
 }
 
 function calculateAoN(n) {
   if (state.solves.length < n) return '—';
-  // Tomar las últimas N resoluciones (que están al principio de array)
   const lastN = state.solves.slice(0, n);
   const max = Math.max(...lastN);
   const min = Math.min(...lastN);
-  
-  // Descartar el mejor y peor tiempo (promedio WCA)
   const sum = lastN.reduce((a, b) => a + b, 0) - max - min;
   return `${(sum / (n - 2)).toFixed(2)}s`;
 }
@@ -633,37 +639,50 @@ function renderStats() {
 }
 
 // --- AJUSTES Y COMPORTAMIENTO ---
-function applyCustomSettings() {
-  state.settings.focusMin = parseInt(nodes.customFocus.value) || 25;
-  state.settings.shortMin = parseInt(nodes.customShort.value) || 5;
-  state.settings.longMin = parseInt(nodes.customLong.value) || 15;
-  state.settings.rounds = parseInt(nodes.customRounds.value) || 4;
-  state.settings.ambientSound = nodes.customAmbient.value;
+function applyCustomSettings({ silent = false } = {}) {
+  state.settings.focusMin = Math.max(1, parseInt(nodes.customFocus.value) || 25);
+  state.settings.shortMin = Math.max(1, parseInt(nodes.customShort.value) || 5);
+  state.settings.longMin = Math.max(1, parseInt(nodes.customLong.value) || 15);
+  state.settings.rounds = Math.max(1, parseInt(nodes.customRounds.value) || 4);
 
-  nodes.ambientSelect.value = state.settings.ambientSound;
+  nodes.customFocus.value = state.settings.focusMin;
+  nodes.customShort.value = state.settings.shortMin;
+  nodes.customLong.value = state.settings.longMin;
+  nodes.customRounds.value = state.settings.rounds;
 
   saveData();
-  setPhase('focus');
-  showToast('Ajustes personalizados aplicados con éxito', 'check');
+
+  // Solo reinicia la fase visible si el timer no está corriendo, para no
+  // cortar una sesión de foco en marcha por accidente.
+  if (!state.isRunning) {
+    setPhase(state.phase === 'focus' ? 'focus' : state.phase);
+  } else {
+    updateSessionInfo();
+  }
+
+  if (!silent) showToast('Ajustes de temporizador aplicados', 'check');
+}
+
+function applyPreset(presetStr) {
+  const [focus, short, long, rounds] = presetStr.split(',').map(Number);
+  nodes.customFocus.value = focus;
+  nodes.customShort.value = short;
+  nodes.customLong.value = long;
+  nodes.customRounds.value = rounds;
+  applyCustomSettings();
 }
 
 // --- TEMAS VISUALES ---
-const THEMES = ['cyberpunk', 'liquid', 'matrix', 'nordic'];
+const THEMES = ['cyberpunk', 'liquid', 'matrix', 'nordic', 'sunset', 'sakura', 'ocean', 'mono'];
 
 function changeTheme(themeName) {
-  if (!THEMES.includes(themeName)) return;
-  document.body.removeAttribute('data-theme');
+  if (!THEMES.includes(themeName)) themeName = 'cyberpunk';
   document.documentElement.setAttribute('data-theme', themeName);
   state.settings.theme = themeName;
   saveData();
 
-  // Actualizar indicadores activos en el panel de temas
   document.querySelectorAll('.theme-swatch').forEach(btn => {
-    if (btn.dataset.themeChoice === themeName) {
-      btn.classList.add('is-active');
-    } else {
-      btn.classList.remove('is-active');
-    }
+    btn.classList.toggle('is-active', btn.dataset.themeChoice === themeName);
   });
 }
 
@@ -674,11 +693,11 @@ function cycleThemes() {
 }
 
 // Imagen de fondo de pantalla personalizada
-nodes.bgUploadInput.addEventListener('change', function(e) {
+nodes.bgUploadInput.addEventListener('change', function (e) {
   const file = e.target.files[0];
   if (file) {
     const reader = new FileReader();
-    reader.onload = function(event) {
+    reader.onload = function (event) {
       const url = event.target.result;
       document.body.style.setProperty('--custom-bg-img', `url('${url}')`);
       document.body.classList.add('has-custom-bg');
@@ -694,11 +713,13 @@ nodes.removeBgBtn.addEventListener('click', () => {
   document.body.style.removeProperty('--custom-bg-img');
   document.body.classList.remove('has-custom-bg');
   state.settings.customBg = null;
+  nodes.bgUploadInput.value = '';
   nodes.bgStatus.textContent = 'Sin fondo personalizado activo.';
   saveData();
 });
 
 // --- TOASTS / NOTIFICACIONES ---
+let toastTimeout = null;
 function showToast(message, iconName = 'bell') {
   let toast = document.querySelector('.toast');
   if (!toast) {
@@ -709,11 +730,17 @@ function showToast(message, iconName = 'bell') {
 
   toast.innerHTML = `<i data-lucide="${iconName}"></i> <span>${message}</span>`;
   lucide.createIcons();
-  
+
   toast.classList.add('is-visible');
-  setTimeout(() => {
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => {
     toast.classList.remove('is-visible');
   }, 3500);
+}
+
+// --- LAYOUT: modo speedcuber apila el timer grande arriba y la mezcla debajo ---
+function applyModeLayout(mode) {
+  nodes.mainGrid.classList.toggle('mode-cube', mode === 'speedcuber');
 }
 
 // --- INTERFAZ, TOGGLES Y EVENTOS DE INTERRUPCIÓN ---
@@ -729,15 +756,24 @@ function initEventListeners() {
       btn.setAttribute('aria-selected', 'true');
 
       const mode = btn.dataset.mode;
+      if (mode === state.mode) return;
       state.mode = mode;
+      applyModeLayout(mode);
 
       if (mode === 'speedcuber') {
+        pauseTimer();
         nodes.cubePanel.classList.remove('hidden');
         nodes.timeReadout.classList.add('hidden');
         nodes.cubeReadout.classList.remove('hidden');
         generateScramble();
         renderSolves();
+        nodes.microState.textContent = 'Mantén pulsado Espacio para iniciar la inspección';
       } else {
+        clearInterval(state.solveInterval);
+        clearInterval(state.inspectionInterval);
+        state.isSolving = false;
+        state.inspectionActive = false;
+        nodes.inspectionWrap.classList.add('hidden');
         nodes.cubePanel.classList.add('hidden');
         nodes.timeReadout.classList.remove('hidden');
         nodes.cubeReadout.classList.add('hidden');
@@ -748,8 +784,8 @@ function initEventListeners() {
 
   // Toggles de paneles laterales
   const closeAllPanels = () => {
-    nodes.sidebar.classList.remove('is-open', 'hidden');
-    nodes.statsPanel.classList.remove('is-open', 'hidden');
+    nodes.sidebar.classList.remove('is-open');
+    nodes.statsPanel.classList.remove('is-open');
     nodes.sidebar.classList.add('hidden');
     nodes.statsPanel.classList.add('hidden');
     nodes.overlay.classList.remove('is-open');
@@ -776,6 +812,10 @@ function initEventListeners() {
 
   document.querySelectorAll('.panel-close-btn, .overlay').forEach(el => {
     el.addEventListener('click', closeAllPanels);
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeAllPanels();
   });
 
   // Botones Pomodoro
@@ -823,14 +863,15 @@ function initEventListeners() {
   nodes.ambientVolume.addEventListener('input', (e) => {
     state.settings.ambientVolume = parseFloat(e.target.value) / 100;
     saveData();
-    if (ambientGainNode && !isMuted) {
+    if (ambientGainNode && !isMuted() && audioCtx) {
       ambientGainNode.gain.setValueAtTime(state.settings.ambientVolume, audioCtx.currentTime);
     }
   });
 
   nodes.muteAllBtn.addEventListener('click', () => {
-    isMuted = !isMuted;
-    if (isMuted) {
+    state.settings.muted = !state.settings.muted;
+    saveData();
+    if (state.settings.muted) {
       nodes.muteAllBtn.innerHTML = '<i data-lucide="volume"></i> Activar sonido (M)';
       stopAmbient();
     } else {
@@ -841,11 +882,16 @@ function initEventListeners() {
   });
 
   // Aplicar Personalización
-  nodes.applyCustomBtn.addEventListener('click', applyCustomSettings);
+  nodes.applyCustomBtn.addEventListener('click', () => applyCustomSettings());
+
+  // Presets rápidos
+  document.querySelectorAll('.preset-chip').forEach(btn => {
+    btn.addEventListener('click', () => applyPreset(btn.dataset.preset));
+  });
 
   // Speedcuber auxiliares
   nodes.newScrambleBtn.addEventListener('click', generateScramble);
-  
+
   nodes.clearTimesBtn.addEventListener('click', () => {
     if (confirm('¿Quieres borrar todos tus tiempos de resolución de hoy?')) {
       state.solves = [];
@@ -898,6 +944,10 @@ function initEventListeners() {
     if (e.key === 'm' || e.key === 'M') {
       nodes.muteAllBtn.click();
     }
+
+    if (e.key === 't' || e.key === 'T') {
+      cycleThemes();
+    }
   });
 
   window.addEventListener('keyup', (e) => {
@@ -911,19 +961,22 @@ function initEventListeners() {
 function init() {
   loadData();
   initEventListeners();
-  
+
   // Sincronizar UI de Ajustes según LocalStorage
   nodes.customFocus.value = state.settings.focusMin;
   nodes.customShort.value = state.settings.shortMin;
   nodes.customLong.value = state.settings.longMin;
   nodes.customRounds.value = state.settings.rounds;
-  nodes.customAmbient.value = state.settings.ambientSound;
   nodes.autoStartToggle.checked = state.settings.autoStart;
   nodes.strictModeToggle.checked = state.settings.strictMode;
   nodes.alarmSelect.value = state.settings.alarmSound;
   nodes.alarmVolume.value = state.settings.alarmVolume * 100;
   nodes.ambientSelect.value = state.settings.ambientSound;
   nodes.ambientVolume.value = state.settings.ambientVolume * 100;
+
+  if (state.settings.muted) {
+    nodes.muteAllBtn.innerHTML = '<i data-lucide="volume"></i> Activar sonido (M)';
+  }
 
   // Restaurar fondo personalizado si existiese
   if (state.settings.customBg) {
@@ -932,12 +985,14 @@ function init() {
     nodes.bgStatus.textContent = 'Fondo de pantalla activo.';
   }
 
-  // Cargar estado inicial del temporizador
+  // Cargar estado inicial del temporizador y tema (el tema ya se pre-aplicó
+  // en <head> para evitar parpadeos; esto solo sincroniza los indicadores)
   changeTheme(state.settings.theme);
   setPhase('focus');
+  updateSessionInfo();
   renderStats();
+  applyModeLayout(state.mode);
 
-  // Asegurar iconos renderizados
   lucide.createIcons();
 }
 
